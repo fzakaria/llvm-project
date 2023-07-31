@@ -8,20 +8,28 @@
 using namespace llvm;
 using namespace BinaryFormat;
 
-static void writeInMemoryDatabaseToStream(llvm::raw_ostream &os, sqlite3 *db);
+static void writeInMemoryDatabaseToStream(llvm::raw_ostream &os, sqlite3 *DB);
 
-static void initializeTables(sqlite3 *db);
+static void initializeTables(sqlite3 *DB);
 
 SQELF::SQELF() {
-  int rc = sqlite3_open(":memory:", &db);
+  int rc = sqlite3_open(":memory:", &DB);
   if (rc != SQLITE_OK) {
     report_fatal_error("Could not create an in-memory sqlite database");
   }
-  initializeTables(db);
+  initializeTables(DB);
+}
+
+SQELF::SQELF(const Ins &S){
+  int rc = sqlite3_open(":memory:", &DB);
+  if (rc != SQLITE_OK) {
+    report_fatal_error("Could not create an in-memory sqlite database");
+  }
+  initializeTables(DB);
 }
 
 SQELF::~SQELF() {
-  int rc = sqlite3_close(db);
+  int rc = sqlite3_close(DB);
   if (rc != SQLITE_OK) {
     report_fatal_error(
         "Could not close in-memory sqlite database; likely database is locked");
@@ -31,7 +39,8 @@ SQELF::~SQELF() {
 namespace llvm {
 namespace BinaryFormat {
 llvm::raw_ostream &operator<<(llvm::raw_ostream &OS, const SQELF &BF) {
-  writeInMemoryDatabaseToStream(OS, BF.db);
+  writeInstructionsToDatabase(BF.DB, BF.I);
+  writeInMemoryDatabaseToStream(OS, BF.DB);
   return OS;
 }
 } // namespace BinaryFormat
@@ -61,7 +70,7 @@ void initializeTables(sqlite3 *db) {
  * This function handles that conversion by first dumping the database
  * to a temporary file.
  */
-static void writeInMemoryDatabaseToStream(llvm::raw_ostream &OS, sqlite3 *db) {
+static void writeInMemoryDatabaseToStream(llvm::raw_ostream &OS, sqlite3 *DB) {
   llvm::SmallString<64> tempFilename;
   if (llvm::sys::fs::createTemporaryFile("temp", "db", tempFilename)) {
     report_fatal_error("Could not create temporary file");
@@ -75,7 +84,7 @@ static void writeInMemoryDatabaseToStream(llvm::raw_ostream &OS, sqlite3 *db) {
     return;
   }
 
-  sqlite3_backup *backup = sqlite3_backup_init(tempDb, "main", db, "main");
+  sqlite3_backup *backup = sqlite3_backup_init(tempDb, "main", DB, "main");
   if (backup) {
     sqlite3_backup_step(backup, -1);
     sqlite3_backup_finish(backup);
@@ -95,3 +104,10 @@ static void writeInMemoryDatabaseToStream(llvm::raw_ostream &OS, sqlite3 *db) {
   // Delete the temporary file.
   std::remove(tempFilename.c_str());
 }
+
+static void writeRelocationToDatabase(sqlite3 *DB, const SQELF::)
+static void writeInstructionsToDatabase(sqlite3 *DB, const SQELF::Ins &I){
+  // TODO
+}
+
+
