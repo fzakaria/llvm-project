@@ -1,4 +1,6 @@
 #include "llvm/BinaryFormat/SQELF.h"
+#include "llvm/MC/MCExpr.h"
+#include "llvm/MC/MCSymbol.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FormatVariadic.h"
@@ -43,10 +45,10 @@ llvm::raw_ostream &operator<<(llvm::raw_ostream &OS, const SQELF &BF) {
 const char *CREATE_METADATA_TABLE_SQL =
 #include "./sql/create_metadata.sql"
     ;
-const char *CREATE_RELOCATION_TABLE_SQL = 
+const char *CREATE_RELOCATION_TABLE_SQL =
 #include "./sql/create_relocation.sql"
     ;
-const char *CREATE_INSTRUCTION_TABLE_SQL = 
+const char *CREATE_INSTRUCTION_TABLE_SQL =
 #include "./sql/create_instructions.sql"
     ;
 
@@ -66,7 +68,8 @@ void initializeTables(sqlite3 *db) {
         formatv("failed to create sqlite3 table: {0}", std::string(errMsg)));
     sqlite3_free(errMsg);
   }
-  rc = sqlite3_exec(db, CREATE_INSTRUCTION_TABLE_SQL, nullptr, nullptr, &errMsg);
+  rc =
+      sqlite3_exec(db, CREATE_INSTRUCTION_TABLE_SQL, nullptr, nullptr, &errMsg);
   if (rc != SQLITE_OK) {
     report_fatal_error(
         formatv("failed to create sqlite3 table: {0}", std::string(errMsg)));
@@ -115,37 +118,80 @@ static void writeInMemoryDatabaseToStream(llvm::raw_ostream &OS, sqlite3 *DB) {
   std::remove(tempFilename.c_str());
 }
 
-static void writeRelocationToDatabase(sqlite3 *DB, const SQELF::Rela &R){
+void writeRelocationToDatabase(sqlite3 *DB, const SQELF::Rela &R) {
   // TODO
 }
-static void writeInstructionToDatabase(sqlite3 *DB, const SQELF::Ins &I){
+void writeInstructionToDatabase(sqlite3 *DB, const SQELF::Ins &I) {
   int rc = sqlite3_open(":memory:", &DB);
   if (rc != SQLITE_OK) {
     report_fatal_error("Could not create an in-memory sqlite database");
   }
 
-  sqlite3_stmt* stmt;
-  const char* sql = "INSERT INTO Ins VALUES(?, ?, ?, ?, ?, ?)";
+  sqlite3_stmt *stmt;
+  const char *sql = "INSERT INTO Ins VALUES(?, ?, ?, ?, ?, ?)";
   rc = sqlite3_prepare_v2(DB, sql, -1, &stmt, nullptr);
   if (rc != SQLITE_OK) {
-    report_fatal_error("Could not prepare INSERT statement in an in-memory sqlite database");
+    report_fatal_error(
+        "Could not prepare INSERT statement in an in-memory sqlite database");
   }
 
-  const char* mnemonic = I.mnemonic.c_str();
-  const char* operand1 = I.operand1.c_str();
-  const char* operand2 = I.operand2.c_str();
-  const char* operand3 = I.operand3.c_str();
+  const char *mnemonic = I.mnemonic.data();
+  std::string operandString;
+  llvm::MCOperand operand1 = I.operand1;
+  llvm::MCOperand operand2 = I.operand2;
+  llvm::MCOperand operand3 = I.operand3;
 
   rc = sqlite3_bind_int64(stmt, 1, I.id);
   rc |= sqlite3_bind_int64(stmt, 2, I.address);
-  rc |= sqlite3_bind_text(stmt, 3, mnemonic, -1, SQLITE_STATIC); 
-  rc |= sqlite3_bind_text(stmt, 4, operand1, -1, SQLITE_STATIC); 
-  rc |= sqlite3_bind_text(stmt, 5, operand2, -1, SQLITE_STATIC); 
-  rc |= sqlite3_bind_text(stmt, 6, operand3, -1, SQLITE_STATIC);
+  rc |= sqlite3_bind_text(stmt, 3, mnemonic, -1, SQLITE_STATIC);
+
+  if (operand1.isExpr()) {
+    const llvm::MCExpr *expr = operand1.getExpr();
+    llvm::raw_string_ostream(operandString) << *expr;
+  } else if (operand1.isImm()) {
+    operandString = std::to_string(operand1.getImm());
+  } else if (operand1.isReg()) {
+    // Handle register operands if needed
+    unsigned regNum = operand1.getReg();
+    operandString = "register_" + std::to_string(regNum);
+  } else {
+    // Handle other cases if needed
+    operandString = "unknown_operand";
+  }
+  rc |= sqlite3_bind_text(stmt, 4, operandString.c_str(), -1, SQLITE_STATIC);
+
+  if (operand2.isExpr()) {
+    const llvm::MCExpr *expr = operand2.getExpr();
+    llvm::raw_string_ostream(operandString) << *expr;
+  } else if (operand2.isImm()) {
+    operandString = std::to_string(operand2.getImm());
+  } else if (operand2.isReg()) {
+    // Handle register operands if needed
+    unsigned regNum = operand2.getReg();
+    operandString = "register_" + std::to_string(regNum);
+  } else {
+    // Handle other cases if needed
+    operandString = "unknown_operand";
+  }
+  rc |= sqlite3_bind_text(stmt, 5, operandString.c_str(), -1, SQLITE_STATIC);
+  if (operand3.isExpr()) {
+    const llvm::MCExpr *expr = operand3.getExpr();
+    llvm::raw_string_ostream(operandString) << *expr;
+  } else if (operand3.isImm()) {
+    operandString = std::to_string(operand3.getImm());
+  } else if (operand3.isReg()) {
+    // Handle register operands if needed
+    unsigned regNum = operand3.getReg();
+    operandString = "register_" + std::to_string(regNum);
+  } else {
+    // Handle other cases if needed
+    operandString = "unknown_operand";
+  }
+  rc |= sqlite3_bind_text(stmt, 6, operandString.c_str(), -1, SQLITE_STATIC);
 
   if (rc != SQLITE_OK) {
-    report_fatal_error("Could not bind to the statement in an in-memory sqlite database");
+    report_fatal_error(
+        "Could not bind to the statement in an in-memory sqlite database");
   }
+  sqlite3_finalize(stmt);
 }
-
-

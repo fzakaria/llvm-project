@@ -1,6 +1,7 @@
 #ifndef LLVM_BINARYFORMAT_SQELF_H
 #define LLVM_BINARYFORMAT_SQELF_H
 
+#include "llvm/MC/MCInst.h"
 #include "llvm/Support/raw_ostream.h"
 #include <sqlite3.h>
 
@@ -10,19 +11,17 @@ class SQELF {
 
 public:
   typedef struct Rela {
-    uint64_t id;      // Section Header index
     uint64_t r_offset; // Location (file byte offset, or program virtual addr).
-    uint64_t r_info;  // Symbol table index and type of relocation to apply.
-    int64_t r_addend; // Compute value for relocatable field by adding this.
+    uint64_t r_info;   // Symbol table index and type of relocation to apply.
+    int64_t r_addend;  // Compute value for relocatable field by adding this.
   } Rela;
 
   typedef struct Ins {
-    uint64_t id; // Section Header index
     uint64_t address;
-    std::string mnemonic;
-    std::string operand1;
-    std::string operand2;
-    std::string operand3;
+    llvm::StringRef mnemonic;
+    llvm::MCOperand operand1;
+    llvm::MCOperand operand2;
+    llvm::MCOperand operand3;
   } Ins;
 
   SQELF();
@@ -32,8 +31,6 @@ public:
 
 private:
   sqlite3 *DB;
-  Rela R;
-  Ins I;
 };
 } // namespace BinaryFormat
 } // namespace llvm
