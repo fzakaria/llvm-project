@@ -20,7 +20,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-
+#include <iostream>
 using namespace llvm;
 
 MCAsmBackend::MCAsmBackend(support::endianness Endian, unsigned RelaxFixupKind)
@@ -30,12 +30,16 @@ MCAsmBackend::~MCAsmBackend() = default;
 
 std::unique_ptr<MCObjectWriter>
 MCAsmBackend::createObjectWriter(raw_pwrite_stream &OS) const {
+  std::cout<<"Create object writer"<<std::endl;
   auto TW = createObjectTargetWriter();
   switch (TW->getFormat()) {
   case Triple::SQELF:
+    std::cout<<"createSQELFObjectWriter"<<std::endl;
     return createSQELFObjectWriter(
-        cast<MCSQELFObjectTargetWriter>(std::move(TW)), OS);
+        cast<MCSQELFObjectTargetWriter>(std::move(TW)), OS,
+                                 Endian == support::little);
   case Triple::ELF:
+
     return createELFObjectWriter(cast<MCELFObjectTargetWriter>(std::move(TW)), OS,
                                  Endian == support::little);
   case Triple::MachO:

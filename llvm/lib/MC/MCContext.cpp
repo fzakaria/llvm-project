@@ -56,6 +56,7 @@
 #include <optional>
 #include <tuple>
 #include <utility>
+#include <iostream>
 
 using namespace llvm;
 
@@ -92,9 +93,11 @@ MCContext::MCContext(const Triple &TheTriple, const MCAsmInfo *mai,
     Env = IsCOFF;
     break;
   case Triple::ELF:
+    std::cout <<"ELF"<<std::endl;
     Env = IsELF;
     break;
   case Triple::SQELF:
+      std::cout <<"SQELF"<<std::endl;
     Env = IsSQELF;
     break;
   case Triple::Wasm:

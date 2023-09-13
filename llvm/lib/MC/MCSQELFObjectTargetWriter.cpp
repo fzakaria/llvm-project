@@ -11,6 +11,19 @@
 
 using namespace llvm;
 
-MCSQELFObjectTargetWriter::MCSQELFObjectTargetWriter() {}
+MCSQELFObjectTargetWriter::MCSQELFObjectTargetWriter(bool Is64Bit_, uint8_t OSABI_,
+                                                 uint16_t EMachine_,
+                                                 bool HasRelocationAddend_,
+                                                 uint8_t ABIVersion_)
+    : OSABI(OSABI_), ABIVersion(ABIVersion_), EMachine(EMachine_),
+      HasRelocationAddend(HasRelocationAddend_), Is64Bit(Is64Bit_) {}
+
+bool MCSQELFObjectTargetWriter::needsRelocateWithSymbol(const MCSymbol &Sym,
+                                                      unsigned Type) const {
+  return false;
+}
+
+void MCSQELFObjectTargetWriter::addTargetSectionFlags(MCContext &Ctx,
+                                                    MCSectionELF &Sec) {}
 
 MCSQELFObjectTargetWriter::~MCSQELFObjectTargetWriter() = default;

@@ -30,6 +30,7 @@
 #include <tuple>
 #include <utility>
 #include <vector>
+#include <sqlite3.h>
 
 namespace llvm {
 
@@ -266,6 +267,9 @@ public:
   void writeSectionData(raw_ostream &OS, const MCSection *Section,
                         const MCAsmLayout &Layout) const;
 
+  /// Emit the section contents to \p OS.
+  void writeSQLSectionData(raw_ostream &OS, sqlite3 *DB, const MCSection *Section,
+                        const MCAsmLayout &Layout) const;
   /// Check whether a given symbol has been flagged with .thumb_func.
   bool isThumbFunc(const MCSymbol *Func) const;
 

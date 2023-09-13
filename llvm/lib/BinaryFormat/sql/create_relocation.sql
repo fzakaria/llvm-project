@@ -6,10 +6,6 @@ R"(-- typedef struct Rela {
 --  } Rela;
 CREATE TABLE IF NOT EXISTS Relocation
 (
-    id
-    INTEGER
-    PRIMARY
-    KEY,
     address
     INTEGER,
     r_info,

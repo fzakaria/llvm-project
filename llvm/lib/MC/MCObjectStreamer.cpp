@@ -209,6 +209,7 @@ MCFragment *MCObjectStreamer::getCurrentFragment() const {
 static bool canReuseDataFragment(const MCDataFragment &F,
                                  const MCAssembler &Assembler,
                                  const MCSubtargetInfo *STI) {
+  /*
   if (!F.hasInstructions())
     return true;
   // Do not add data after a linker-relaxable instruction. The difference
@@ -223,6 +224,8 @@ static bool canReuseDataFragment(const MCDataFragment &F,
   // If the subtarget is changed mid fragment we start a new fragment to record
   // the new STI.
   return !STI || F.getSubtargetInfo() == STI;
+  */
+  return false;
 }
 
 MCDataFragment *

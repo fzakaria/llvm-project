@@ -794,6 +794,66 @@ void MCAssembler::writeSectionData(raw_ostream &OS, const MCSection *Sec,
          OS.tell() - Start == Layout.getSectionAddressSize(Sec));
 }
 
+void MCAssembler::writeSQLSectionData(raw_ostream &OS, sqlite3 *DB, const MCSection *Sec,
+                                   const MCAsmLayout &Layout) const {
+  assert(getBackendPtr() && "Expected assembler backend");
+
+  // Ignore virtual sections.
+  if (Sec->isVirtualSection()) {
+    assert(Layout.getSectionFileSize(Sec) == 0 && "Invalid size for section!");
+
+    // Check that contents are only things legal inside a virtual section.
+    for (const MCFragment &F : *Sec) {
+      switch (F.getKind()) {
+      default: llvm_unreachable("Invalid fragment in virtual section!");
+      case MCFragment::FT_Data: {
+        // Check that we aren't trying to write a non-zero contents (or fixups)
+        // into a virtual section. This is to support clients which use standard
+        // directives to fill the contents of virtual sections.
+        const MCDataFragment &DF = cast<MCDataFragment>(F);
+        if (DF.fixup_begin() != DF.fixup_end())
+          getContext().reportError(SMLoc(), Sec->getVirtualSectionKind() +
+                                                " section '" + Sec->getName() +
+                                                "' cannot have fixups");
+        for (unsigned i = 0, e = DF.getContents().size(); i != e; ++i)
+          if (DF.getContents()[i]) {
+            getContext().reportError(SMLoc(),
+                                     Sec->getVirtualSectionKind() +
+                                         " section '" + Sec->getName() +
+                                         "' cannot have non-zero initializers");
+            break;
+          }
+        break;
+      }
+      case MCFragment::FT_Align:
+        // Check that we aren't trying to write a non-zero value into a virtual
+        // section.
+        assert((cast<MCAlignFragment>(F).getValueSize() == 0 ||
+                cast<MCAlignFragment>(F).getValue() == 0) &&
+               "Invalid align in virtual section!");
+        break;
+      case MCFragment::FT_Fill:
+        assert((cast<MCFillFragment>(F).getValue() == 0) &&
+               "Invalid fill in virtual section!");
+        break;
+      case MCFragment::FT_Org:
+        break;
+      }
+    }
+
+    return;
+  }
+
+  uint64_t Start = OS.tell();
+  (void)Start;
+
+  for (const MCFragment &F : *Sec)
+    writeFragment(OS, *this, Layout, F);
+
+  assert(getContext().hadError() ||
+         OS.tell() - Start == Layout.getSectionAddressSize(Sec));
+}
+
 std::tuple<MCValue, uint64_t, bool>
 MCAssembler::handleFixup(const MCAsmLayout &Layout, MCFragment &F,
                          const MCFixup &Fixup) {

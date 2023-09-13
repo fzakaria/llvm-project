@@ -131,6 +131,10 @@ createX86MachObjectWriter(bool Is64Bit, uint32_t CPUType, uint32_t CPUSubtype);
 /// Construct an X86 ELF object writer.
 std::unique_ptr<MCObjectTargetWriter>
 createX86ELFObjectWriter(bool IsELF64, uint8_t OSABI, uint16_t EMachine);
+
+/// Construct an X86 SQELF object writer.
+std::unique_ptr<MCObjectTargetWriter>
+createX86SQELFObjectWriter(bool IsELF64, uint8_t OSABI, uint16_t EMachine);
 /// Construct an X86 Win COFF object writer.
 std::unique_ptr<MCObjectTargetWriter>
 createX86WinCOFFObjectWriter(bool Is64Bit);

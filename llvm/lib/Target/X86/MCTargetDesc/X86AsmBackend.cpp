@@ -35,7 +35,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
-
+#include <iostream>
 using namespace llvm;
 
 namespace {
@@ -1112,10 +1112,11 @@ public:
     // TODO(fzakaria): Is there a better way to separate the AsmBackend from the
     // ObjectWriter? We need to first create the ObjectTargetWriter
     // which creates the ObjectWriter in AsmBackend::createObjectWriter
-    if (getSTI().getTargetTriple().isOSBinFormatSQELF()) {
-      return std::make_unique<MCSQELFObjectTargetWriter>();
-    }
-    return createX86ELFObjectWriter(/*IsELF64*/ true, OSABI, ELF::EM_X86_64);
+   // if (getSTI().getTargetTriple().isOSBinFormatSQELF()) {
+      std::cout<<"MCSQELFObjectTargetWriter"<<std::endl;
+      //return std::make_unique<MCSQELFObjectTargetWriter>();
+    //}
+    return createX86SQELFObjectWriter(/*IsELF64*/ true, OSABI, ELF::EM_X86_64);
   }
 };
 

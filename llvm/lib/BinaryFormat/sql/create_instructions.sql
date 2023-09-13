@@ -9,10 +9,9 @@ R"(-- typedef struct Ins {
 
 CREATE TABLE IF NOT EXISTS Ins
 (   
-    id
-    INTEGER,
     address
-    INTEGER,
+    INTEGER
+    PRIMARY KEY,
     mnemonic
     VARCHAR,
     operand1
@@ -20,8 +19,5 @@ CREATE TABLE IF NOT EXISTS Ins
     operand2
     VARCHAR,
     operand3
-    VARCHAR,
-    PRIMARY
-    KEY
-    (id, address)
+    VARCHAR
 );)"

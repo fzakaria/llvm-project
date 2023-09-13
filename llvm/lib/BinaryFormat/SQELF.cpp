@@ -10,17 +10,13 @@
 using namespace llvm;
 using namespace BinaryFormat;
 
-static void writeInMemoryDatabaseToStream(llvm::raw_ostream &os, sqlite3 *DB);
-static void writeRelocationToDatabase(sqlite3 *DB, const SQELF::Rela &R);
-static void writeInstructionToDatabase(sqlite3 *DB, const SQELF::Ins &I);
-static void initializeTables(sqlite3 *DB);
 
 SQELF::SQELF() {
   int rc = sqlite3_open(":memory:", &DB);
   if (rc != SQLITE_OK) {
     report_fatal_error("Could not create an in-memory sqlite database");
   }
-  initializeTables(DB);
+  initializeTables();
 }
 
 SQELF::~SQELF() {
@@ -33,46 +29,31 @@ SQELF::~SQELF() {
 
 namespace llvm {
 namespace BinaryFormat {
-llvm::raw_ostream &operator<<(llvm::raw_ostream &OS, const SQELF &BF) {
-  writeInMemoryDatabaseToStream(OS, BF.DB);
-  return OS;
-}
-} // namespace BinaryFormat
-} // namespace llvm
 
 // TODO(fzakaria): Is there a better preferred way to create large
 // text files?
-const char *CREATE_METADATA_TABLE_SQL =
-#include "./sql/create_metadata.sql"
-    ;
-const char *CREATE_RELOCATION_TABLE_SQL =
-#include "./sql/create_relocation.sql"
-    ;
-const char *CREATE_INSTRUCTION_TABLE_SQL =
-#include "./sql/create_instructions.sql"
-    ;
 
-void initializeTables(sqlite3 *db) {
+void SQELF::initializeTables() {
 
   char *errMsg = nullptr;
   int rc =
-      sqlite3_exec(db, CREATE_METADATA_TABLE_SQL, nullptr, nullptr, &errMsg);
+      sqlite3_exec(DB, CREATE_METADATA_TABLE_SQL, nullptr, nullptr, &errMsg);
   if (rc != SQLITE_OK) {
     report_fatal_error(
-        formatv("failed to create sqlite3 table: {0}", std::string(errMsg)));
+        formatv("failed to create sqlite3 meta data table: {0}", std::string(errMsg)));
     sqlite3_free(errMsg);
   }
-  rc = sqlite3_exec(db, CREATE_RELOCATION_TABLE_SQL, nullptr, nullptr, &errMsg);
+  rc = sqlite3_exec(DB, CREATE_RELOCATION_TABLE_SQL, nullptr, nullptr, &errMsg);
   if (rc != SQLITE_OK) {
     report_fatal_error(
-        formatv("failed to create sqlite3 table: {0}", std::string(errMsg)));
+        formatv("failed to create sqlite3 relocation table: {0}", std::string(errMsg)));
     sqlite3_free(errMsg);
   }
   rc =
-      sqlite3_exec(db, CREATE_INSTRUCTION_TABLE_SQL, nullptr, nullptr, &errMsg);
+      sqlite3_exec(DB, CREATE_INSTRUCTION_TABLE_SQL, nullptr, nullptr, &errMsg);
   if (rc != SQLITE_OK) {
     report_fatal_error(
-        formatv("failed to create sqlite3 table: {0}", std::string(errMsg)));
+        formatv("failed to create sqlite3 instruction table: {0}", std::string(errMsg)));
     sqlite3_free(errMsg);
   }
 }
@@ -83,7 +64,7 @@ void initializeTables(sqlite3 *db) {
  * This function handles that conversion by first dumping the database
  * to a temporary file.
  */
-static void writeInMemoryDatabaseToStream(llvm::raw_ostream &OS, sqlite3 *DB) {
+void SQELF::writeInMemoryDatabaseToStream(llvm::raw_ostream &OS) {
   llvm::SmallString<64> tempFilename;
   if (llvm::sys::fs::createTemporaryFile("temp", "db", tempFilename)) {
     report_fatal_error("Could not create temporary file");
@@ -118,10 +99,10 @@ static void writeInMemoryDatabaseToStream(llvm::raw_ostream &OS, sqlite3 *DB) {
   std::remove(tempFilename.c_str());
 }
 
-void writeRelocationToDatabase(sqlite3 *DB, const SQELF::Rela &R) {
+void SQELF::writeRelocationToDatabase(const SQELF::Rela &R) {
   // TODO
 }
-void writeInstructionToDatabase(sqlite3 *DB, const SQELF::Ins &I) {
+void SQELF::writeInstructionToDatabase(const SQELF::Ins &I) {
   int rc = sqlite3_open(":memory:", &DB);
   if (rc != SQLITE_OK) {
     report_fatal_error("Could not create an in-memory sqlite database");
@@ -141,9 +122,8 @@ void writeInstructionToDatabase(sqlite3 *DB, const SQELF::Ins &I) {
   llvm::MCOperand operand2 = I.operand2;
   llvm::MCOperand operand3 = I.operand3;
 
-  rc = sqlite3_bind_int64(stmt, 1, I.id);
-  rc |= sqlite3_bind_int64(stmt, 2, I.address);
-  rc |= sqlite3_bind_text(stmt, 3, mnemonic, -1, SQLITE_STATIC);
+  rc |= sqlite3_bind_int64(stmt, 1, I.address);
+  rc |= sqlite3_bind_text(stmt, 2, mnemonic, -1, SQLITE_STATIC);
 
   if (operand1.isExpr()) {
     const llvm::MCExpr *expr = operand1.getExpr();
@@ -158,7 +138,7 @@ void writeInstructionToDatabase(sqlite3 *DB, const SQELF::Ins &I) {
     // Handle other cases if needed
     operandString = "unknown_operand";
   }
-  rc |= sqlite3_bind_text(stmt, 4, operandString.c_str(), -1, SQLITE_STATIC);
+  rc |= sqlite3_bind_text(stmt, 3, operandString.c_str(), -1, SQLITE_STATIC);
 
   if (operand2.isExpr()) {
     const llvm::MCExpr *expr = operand2.getExpr();
@@ -173,7 +153,7 @@ void writeInstructionToDatabase(sqlite3 *DB, const SQELF::Ins &I) {
     // Handle other cases if needed
     operandString = "unknown_operand";
   }
-  rc |= sqlite3_bind_text(stmt, 5, operandString.c_str(), -1, SQLITE_STATIC);
+  rc |= sqlite3_bind_text(stmt, 4, operandString.c_str(), -1, SQLITE_STATIC);
   if (operand3.isExpr()) {
     const llvm::MCExpr *expr = operand3.getExpr();
     llvm::raw_string_ostream(operandString) << *expr;
@@ -187,7 +167,7 @@ void writeInstructionToDatabase(sqlite3 *DB, const SQELF::Ins &I) {
     // Handle other cases if needed
     operandString = "unknown_operand";
   }
-  rc |= sqlite3_bind_text(stmt, 6, operandString.c_str(), -1, SQLITE_STATIC);
+  rc |= sqlite3_bind_text(stmt, 5, operandString.c_str(), -1, SQLITE_STATIC);
 
   if (rc != SQLITE_OK) {
     report_fatal_error(
@@ -195,3 +175,10 @@ void writeInstructionToDatabase(sqlite3 *DB, const SQELF::Ins &I) {
   }
   sqlite3_finalize(stmt);
 }
+
+llvm::raw_ostream &operator<<(llvm::raw_ostream &OS, SQELF &BF) {
+  BF.writeInMemoryDatabaseToStream(OS);
+  return OS;
+}
+} // namespace BinaryFormat
+} // namespace llvm

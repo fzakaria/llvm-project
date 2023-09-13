@@ -21,7 +21,7 @@
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Debug.h"
-
+#include <iostream>
 #define DEBUG_TYPE "sqelf"
 
 using namespace llvm;
@@ -31,7 +31,8 @@ MCSQELFStreamer::MCSQELFStreamer(MCContext &Context,
                                  std::unique_ptr<MCObjectWriter> OW,
                                  std::unique_ptr<MCCodeEmitter> Emitter)
     : MCObjectStreamer(Context, std::move(TAB), std::move(OW),
-                       std::move(Emitter)) {}
+                       std::move(Emitter)) {
+}
 
 bool MCSQELFStreamer::emitSymbolAttribute(MCSymbol *Symbol,
                                           MCSymbolAttr Attribute) {
@@ -39,7 +40,9 @@ bool MCSQELFStreamer::emitSymbolAttribute(MCSymbol *Symbol,
 }
 
 void MCSQELFStreamer::emitCommonSymbol(MCSymbol *Symbol, uint64_t Size,
-                                       Align ByteAlignment) {}
+                                       Align ByteAlignment) {
+
+                                       }
 
 void MCSQELFStreamer::emitZerofill(MCSection *Section, MCSymbol *Symbol,
                                    uint64_t Size, Align ByteAlignment,
