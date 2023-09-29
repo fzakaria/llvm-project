@@ -574,7 +574,7 @@ void SQELFWriter::writeSectionData(const MCAssembler &Asm, MCSection &Sec,
   StringRef SectionName = Section.getName();
   auto &MC = Asm.getContext();
   const auto &MAI = MC.getAsmInfo();
-  Asm.writeSQLSectionData(Sqelf.DB, Section, Layout);
+  Asm.writeSQLSectionData(W.OS, Sqelf, &Section, Layout);
   
 }
 

@@ -5,14 +5,13 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-
-#include "llvm/MC/MCAssembler.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/MC/MCAssembler.h"
 #include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCAsmLayout.h"
@@ -801,7 +800,7 @@ void MCAssembler::writeSectionData(raw_ostream &OS, const MCSection *Sec,
          OS.tell() - Start == Layout.getSectionAddressSize(Sec));
 }
 
-void MCAssembler::writeSQLSectionData(raw_ostream &OS, sqlite3 *DB,
+void MCAssembler::writeSQLSectionData(raw_ostream &OS, std::unique_ptr<llvm::BinaryFormat::SQELF>& sql,
                                       const MCSection *Sec,
                                       const MCAsmLayout &Layout) const {
   // ignore virtual sections
@@ -826,37 +825,40 @@ void MCAssembler::writeSQLSectionData(raw_ostream &OS, sqlite3 *DB,
     ++stats::EmittedFragments;
 
     switch (F.getKind()) {
-    case MCFragment::FT_Data:
+    case MCFragment::FT_Data:{
       ++stats::EmittedDataFragments;
-      const llvm::MCSubtargetInfo& STI =
+      const llvm::MCSubtargetInfo &STI =
           *(cast<MCDataFragment>(F).getSubtargetInfo());
       llvm::MCInst Inst;
       std::string Error;
-      const llvm::Target *TheTarget =
-          TargetRegistry::lookupTarget(STI.getTargetTriple().getTriple(), Error);
+      const llvm::Target *TheTarget = TargetRegistry::lookupTarget(
+          STI.getTargetTriple().getTriple(), Error);
       if (!TheTarget)
         return;
       auto *DisAsm = TheTarget->createMCDisassembler(STI, CTX);
       uint64_t Size;
-      //DisAsm->getInstruction(
-      //    Inst, Size, cast<MCDataFragment>(F).getContents(), 0, std::cout);
-      auto data = MCDataFragment>(F).getContents();
+
+      auto data = ArrayRef(cast<MCDataFragment>(F).getContents());
       std::cout << "FT_Data" << std::endl;
-      // std::cout << cast<MCDataFragment>(F).getContents();
+       DisAsm->getInstruction(
+           Inst, Size, data, 0, OS);
       delete DisAsm;
       break;
+    }
 
-    case MCFragment::FT_Relaxable:
+    case MCFragment::FT_Relaxable:{
       ++stats::EmittedRelaxableFragments;
       std::cout << "FT_Relaxable" << std::endl;
       // std::cout << cast<MCRelaxableFragment>(F).getContents();
       break;
+    }
 
-    case MCFragment::FT_CompactEncodedInst:
+    case MCFragment::FT_CompactEncodedInst:{
       ++stats::EmittedCompactEncodedInstFragments;
       std::cout << "FT_CompactEncodedInst" << std::endl;
       // std::cout << cast<MCCompactEncodedInstFragment>(F).getContents();
       break;
+    }
 
     case MCFragment::FT_Fill: {
       ++stats::EmittedFillFragments;
@@ -884,7 +886,8 @@ void MCAssembler::writeSQLSectionData(raw_ostream &OS, sqlite3 *DB,
       // Do copies by chunk.
       StringRef Ref(Data, ChunkSize);
       for (uint64_t I = 0, E = FragmentSize / ChunkSize; I != E; ++I)
-        // std::cout << Ref;
+        //OS << Ref;
+        std::cout<<"Ref"<<std::endl;
 
         // do remainder if needed.
         unsigned TrailingCount = FragmentSize % ChunkSize;
@@ -901,13 +904,13 @@ void MCAssembler::writeSQLSectionData(raw_ostream &OS, sqlite3 *DB,
       int64_t NumBytes = NF.getNumBytes();
       int64_t ControlledNopLength = NF.getControlledNopLength();
       int64_t MaximumNopLength =
-          Asm.getBackend().getMaximumNopSize(*NF.getSubtargetInfo());
+          this->getBackend().getMaximumNopSize(*NF.getSubtargetInfo());
 
       assert(NumBytes > 0 && "Expected positive NOPs fragment size");
       assert(ControlledNopLength >= 0 && "Expected non-negative NOP size");
 
       if (ControlledNopLength > MaximumNopLength) {
-        Asm.getContext().reportError(
+        this->getContext().reportError(
             NF.getLoc(), "illegal NOP size " +
                              std::to_string(ControlledNopLength) +
                              ". (expected within [0, " +
@@ -925,7 +928,7 @@ void MCAssembler::writeSQLSectionData(raw_ostream &OS, sqlite3 *DB,
         uint64_t NumBytesToEmit =
             (uint64_t)std::min(NumBytes, ControlledNopLength);
         assert(NumBytesToEmit && "try to emit empty NOP instruction");
-        if (!Asm.getBackend().writeNopData(OS, NumBytesToEmit,
+        if (!this->getBackend().writeNopData(OS, NumBytesToEmit,
                                            NF.getSubtargetInfo())) {
           report_fatal_error("unable to write nop sequence of the remaining " +
                              Twine(NumBytesToEmit) + " bytes");
@@ -945,7 +948,7 @@ void MCAssembler::writeSQLSectionData(raw_ostream &OS, sqlite3 *DB,
 
     case MCFragment::FT_BoundaryAlign: {
       const MCBoundaryAlignFragment &BF = cast<MCBoundaryAlignFragment>(F);
-      if (!Asm.getBackend().writeNopData(OS, FragmentSize,
+      if (!this->getBackend().writeNopData(OS, FragmentSize,
                                          BF.getSubtargetInfo()))
         report_fatal_error("unable to write nop sequence of " +
                            Twine(FragmentSize) + " bytes");
@@ -998,8 +1001,9 @@ void MCAssembler::writeSQLSectionData(raw_ostream &OS, sqlite3 *DB,
       // OS << PF.getContents();
       break;
     }
-    case MCFragment::FT_Dummy:
+    case MCFragment::FT_Dummy: {
       llvm_unreachable("Should not have been added");
+    }
     }
 
     // assert(OS.tell() - Start == FragmentSize &&

@@ -15,6 +15,7 @@
 #include "llvm/ADT/iterator.h"
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/BinaryFormat/MachO.h"
+#include "llvm/BinaryFormat/SQELF.h"
 #include "llvm/MC/MCDirectives.h"
 #include "llvm/MC/MCDwarf.h"
 #include "llvm/MC/MCLinkerOptimizationHint.h"
@@ -268,7 +269,7 @@ public:
                         const MCAsmLayout &Layout) const;
 
   /// Emit the section contents to \p OS.
-  void writeSQLSectionData(raw_ostream &OS, sqlite3 *DB, const MCSection *Section,
+  void writeSQLSectionData(raw_ostream &OS, std::unique_ptr<llvm::BinaryFormat::SQELF>& sql, const MCSection *Section,
                         const MCAsmLayout &Layout) const;
   /// Check whether a given symbol has been flagged with .thumb_func.
   bool isThumbFunc(const MCSymbol *Func) const;
