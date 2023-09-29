@@ -35,6 +35,7 @@
 #include "llvm/Support/LEB128.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
+#include <iostream>
 #include <cstdint>
 
 using namespace llvm;
@@ -895,6 +896,7 @@ MCStreamer *llvm::createELFStreamer(MCContext &Context,
                                     std::unique_ptr<MCObjectWriter> &&OW,
                                     std::unique_ptr<MCCodeEmitter> &&CE,
                                     bool RelaxAll) {
+  std::cout<<"createELFStreamer"<<std::endl;
   MCELFStreamer *S =
       new MCELFStreamer(Context, std::move(MAB), std::move(OW), std::move(CE));
   if (RelaxAll)

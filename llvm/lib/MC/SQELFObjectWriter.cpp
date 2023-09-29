@@ -341,6 +341,7 @@ uint64_t SQELFWriter::writeObject(MCAssembler &Asm,
     const uint64_t SecStart = align(Section.getAlign());
 
     const MCSymbolELF *SignatureSymbol = Section.getGroup();
+    // TODO: write section data to database
     writeSectionData(Asm, Section, Layout);
 
     uint64_t SecEnd = W.OS.tell();
@@ -439,6 +440,7 @@ uint64_t SQELFWriter::writeObject(MCAssembler &Asm,
                                                       : SectionTable.size() + 1,
       W.Endian);
   unsigned NumSectionsOffset;
+  // ------------------End of preprocessing------------------
 
   auto &Stream = static_cast<raw_pwrite_stream &>(W.OS);
   uint64_t Val =
@@ -447,8 +449,8 @@ uint64_t SQELFWriter::writeObject(MCAssembler &Asm,
                   offsetof(ELF::Elf64_Ehdr, e_shoff));
   NumSectionsOffset = offsetof(ELF::Elf64_Ehdr, e_shnum);
 
-  Stream.pwrite(reinterpret_cast<char *>(&NumSections), sizeof(NumSections),
-                NumSectionsOffset);
+  //Stream.pwrite(reinterpret_cast<char *>(&NumSections), sizeof(NumSections),
+  //              NumSectionsOffset);
 
   //return W.OS.tell() - StartOffset;
 
@@ -572,6 +574,7 @@ void SQELFWriter::writeSectionData(const MCAssembler &Asm, MCSection &Sec,
   StringRef SectionName = Section.getName();
   auto &MC = Asm.getContext();
   const auto &MAI = MC.getAsmInfo();
+  Asm.writeSQLSectionData(Sqelf.DB, Section, Layout);
   
 }
 
