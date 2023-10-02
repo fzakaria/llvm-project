@@ -151,7 +151,7 @@ public:
   void writeSymbol(SymbolTableWriter &Writer, uint32_t StringIndex,
                    ELFSymbolData &MSD, const MCAsmLayout &Layout);
                    
-  //void writeHeader(const MCAssembler &Asm);
+  void writeHeader(const MCAssembler &Asm);
 
 
   // Start and end offset of each section
@@ -160,7 +160,8 @@ public:
 
   // Map from a signature symbol to the group section index
   using RevGroupMapTy = DenseMap<const MCSymbol *, unsigned>;
-
+  
+  void createMemtagRelocs(MCAssembler &Asm);
   /// Compute the symbol table data
   ///
   /// \param Asm - The assembler.
@@ -206,6 +207,7 @@ class SQELFObjectWriter : public MCObjectWriter {
                                 const MCSymbolELF *Sym, uint64_t C,
                                 unsigned Type) const;
   bool hasRelocationAddend() const;
+  bool SeenGnuAbi = false;
 public:
   DenseMap<const MCSectionELF *, std::vector<SQELFRelocationEntry>> Relocations;
   /// The target specific ELF writer instance.
@@ -234,7 +236,7 @@ public:
   MCSectionELF *createRelocationSection(MCContext &Ctx,
                                         const MCSectionELF &Sec);
   void writeRelocations(const MCAssembler &Asm, const MCSectionELF &Sec);
-  
+  bool seenGnuAbi() const { return SeenGnuAbi; }
   friend struct SQELFWriter;
 
 };
@@ -312,15 +314,14 @@ void SymbolTableWriter::writeSymbol(uint32_t name, uint8_t info, uint64_t value,
 uint64_t SQELFWriter::writeObject(MCAssembler &Asm,
                                         const MCAsmLayout &Layout) {
   std::cout<<"sqlwrite write object"<<std::endl;
-  
-  //uint64_t StartOffset = OS.tell();
+  uint64_t StartOffset = W.OS.tell();
 
   MCContext &Ctx = Asm.getContext();
   MCSectionELF *StrtabSection =
       Ctx.getELFSection(".strtab", ELF::SHT_STRTAB, 0);
   StringTableIndex = addToSectionTable(StrtabSection);
 
-  //createMemtagRelocs(Asm);
+  createMemtagRelocs(Asm);
 
   RevGroupMapTy RevGroupMap;
   SectionIndexMapTy SectionIndexMap;
@@ -328,7 +329,7 @@ uint64_t SQELFWriter::writeObject(MCAssembler &Asm,
   std::map<const MCSymbol *, std::vector<const MCSectionELF *>> GroupMembers;
 
   // Write out the ELF header ...
-  //writeHeader(Asm);
+  writeHeader(Asm);
    std::cout<<"hello"<<std::endl;
   // ... then the sections ...
   SectionOffsetsTy SectionOffsets;
@@ -341,7 +342,6 @@ uint64_t SQELFWriter::writeObject(MCAssembler &Asm,
     const uint64_t SecStart = align(Section.getAlign());
 
     const MCSymbolELF *SignatureSymbol = Section.getGroup();
-    // TODO: write section data to database
     writeSectionData(Asm, Section, Layout);
 
     uint64_t SecEnd = W.OS.tell();
@@ -566,14 +566,74 @@ bool SQELFWriter::usesRela(const MCSectionELF &Sec) const {
     return Sec.getType() != ELF::SHT_LLVM_CALL_GRAPH_PROFILE;
 }
 
+void SQELFWriter::writeHeader(const MCAssembler &Asm) {
+  // ELF Header
+  // ----------
+  //
+  // Note
+  // ----
+  // emitWord method behaves differently for ELF32 and ELF64, writing
+  // 4 bytes in the former and 8 in the latter.
+
+  W.OS << ELF::ElfMagic; // e_ident[EI_MAG0] to e_ident[EI_MAG3]
+
+  W.OS << char(ELF::ELFCLASS64); // e_ident[EI_CLASS]
+
+  // e_ident[EI_DATA]
+  W.OS << char(W.Endian == support::little ? ELF::ELFDATA2LSB
+                                           : ELF::ELFDATA2MSB);
+
+  W.OS << char(ELF::EV_CURRENT);        // e_ident[EI_VERSION]
+  // e_ident[EI_OSABI]
+  uint8_t OSABI = OWriter.TargetObjectWriter->getOSABI();
+  W.OS << char(OSABI == ELF::ELFOSABI_NONE && OWriter.seenGnuAbi()
+                   ? int(ELF::ELFOSABI_GNU)
+                   : OSABI);
+  // e_ident[EI_ABIVERSION]
+  W.OS << char(OWriter.TargetObjectWriter->getABIVersion());
+
+  W.OS.write_zeros(ELF::EI_NIDENT - ELF::EI_PAD);
+
+  W.write<uint16_t>(ELF::ET_REL);             // e_type
+
+  W.write<uint16_t>(OWriter.TargetObjectWriter->getEMachine()); // e_machine = target
+
+  W.write<uint32_t>(ELF::EV_CURRENT);         // e_version
+  WriteWord(0);                    // e_entry, no entry point in .o file
+  WriteWord(0);                    // e_phoff, no program header for .o
+  WriteWord(0);                     // e_shoff = sec hdr table off in bytes
+
+  // e_flags = whatever the target wants
+  W.write<uint32_t>(Asm.getELFHeaderEFlags());
+
+  // e_ehsize = ELF header size
+  W.write<uint16_t>(sizeof(ELF::Elf64_Ehdr));
+
+  W.write<uint16_t>(0);                  // e_phentsize = prog header entry size
+  W.write<uint16_t>(0);                  // e_phnum = # prog header entries = 0
+
+  // e_shentsize = Section header entry size
+  W.write<uint16_t>(sizeof(ELF::Elf64_Shdr));
+
+  // e_shnum     = # of section header ents
+  W.write<uint16_t>(0);
+
+  // e_shstrndx  = Section # of '.strtab'
+  assert(StringTableIndex < ELF::SHN_LORESERVE);
+  W.write<uint16_t>(StringTableIndex);
+}
+
 
 void SQELFWriter::writeSectionData(const MCAssembler &Asm, MCSection &Sec,
                                  const MCAsmLayout &Layout) {
-  std::cout<<"write section data"<<std::endl;
   MCSectionELF &Section = static_cast<MCSectionELF &>(Sec);
   StringRef SectionName = Section.getName();
   auto &MC = Asm.getContext();
   const auto &MAI = MC.getAsmInfo();
+  std::cout<<"write Section Data"<<std::endl;
+  Asm.writeSectionData(W.OS, &Section, Layout);
+    std::cout<<"write SQL Section Data"<<std::endl;
+
   Asm.writeSQLSectionData(W.OS, Sqelf, &Section, Layout);
   
 }
@@ -806,6 +866,22 @@ bool SQELFObjectWriter::hasRelocationAddend() const {
   return TargetObjectWriter->hasRelocationAddend();
 }
 
+void SQELFWriter::createMemtagRelocs(MCAssembler &Asm) {
+  MCSectionELF *MemtagRelocs = nullptr;
+  for (const MCSymbol &Sym : Asm.symbols()) {
+    const auto &SymE = cast<MCSymbolELF>(Sym);
+    if (!SymE.isMemtag())
+      continue;
+    if (MemtagRelocs == nullptr) {
+      MemtagRelocs = OWriter.TargetObjectWriter->getMemtagRelocsSection(Asm.getContext());
+      if (MemtagRelocs == nullptr)
+        report_fatal_error("Tagged globals are not available on this architecture.");
+      Asm.registerSection(*MemtagRelocs);
+    }
+    SQELFRelocationEntry Rec(0, &SymE, ELF::R_AARCH64_NONE, 0, nullptr, 0);
+    OWriter.Relocations[MemtagRelocs].push_back(Rec);
+  }
+}
 
 void SQELFWriter::computeSymbolTable(
     MCAssembler &Asm, const MCAsmLayout &Layout,

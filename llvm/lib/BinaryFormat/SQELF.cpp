@@ -5,11 +5,11 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include <iostream>
 #include <sqlite3.h>
 
 using namespace llvm;
 using namespace BinaryFormat;
-
 
 SQELF::SQELF() {
   int rc = sqlite3_open(":memory:", &DB);
@@ -29,31 +29,37 @@ SQELF::~SQELF() {
 
 namespace llvm {
 namespace BinaryFormat {
-
 // TODO(fzakaria): Is there a better preferred way to create large
 // text files?
 
 void SQELF::initializeTables() {
-
+  std::cout << "initialize tables" << std::endl;
   char *errMsg = nullptr;
   int rc =
       sqlite3_exec(DB, CREATE_METADATA_TABLE_SQL, nullptr, nullptr, &errMsg);
   if (rc != SQLITE_OK) {
-    report_fatal_error(
-        formatv("failed to create sqlite3 meta data table: {0}", std::string(errMsg)));
+    report_fatal_error(formatv("failed to create sqlite3 meta data table: {0}",
+                               std::string(errMsg)));
     sqlite3_free(errMsg);
   }
   rc = sqlite3_exec(DB, CREATE_RELOCATION_TABLE_SQL, nullptr, nullptr, &errMsg);
   if (rc != SQLITE_OK) {
-    report_fatal_error(
-        formatv("failed to create sqlite3 relocation table: {0}", std::string(errMsg)));
+    report_fatal_error(formatv("failed to create sqlite3 relocation table: {0}",
+                               std::string(errMsg)));
     sqlite3_free(errMsg);
   }
   rc =
       sqlite3_exec(DB, CREATE_INSTRUCTION_TABLE_SQL, nullptr, nullptr, &errMsg);
   if (rc != SQLITE_OK) {
     report_fatal_error(
-        formatv("failed to create sqlite3 instruction table: {0}", std::string(errMsg)));
+        formatv("failed to create sqlite3 instruction table: {0}",
+                std::string(errMsg)));
+    sqlite3_free(errMsg);
+  }
+  rc = sqlite3_exec(DB, CREATE_FRAGMENT_TABLE_SQL, nullptr, nullptr, &errMsg);
+  if (rc != SQLITE_OK) {
+    report_fatal_error(formatv("failed to create sqlite3 fragment table: {0}",
+                               std::string(errMsg)));
     sqlite3_free(errMsg);
   }
 }
@@ -99,8 +105,72 @@ void SQELF::writeInMemoryDatabaseToStream(llvm::raw_ostream &OS) {
   std::remove(tempFilename.c_str());
 }
 
+void SQELF::viewFragmentTable() {
+  std::cout<<"view fragment table"<<std::endl;
+  sqlite3_stmt *stmt;
+  const char *sql = "SELECT * FROM Fragment";
+  int rc = sqlite3_prepare_v2(DB, sql, -1, &stmt, NULL);
+  if (rc != SQLITE_OK) {
+    std::cout<<"error: "<< sqlite3_errmsg(DB);
+    return;
+  }
+  while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+    uint64_t address = sqlite3_column_int(stmt, 0);
+    const unsigned char* type = sqlite3_column_text(stmt, 1);
+    unsigned int layoutOrder = sqlite3_column_int(stmt, 2);
+    uint64_t offset = sqlite3_column_int(stmt, 3);
+    bool hasInstructions = sqlite3_column_int(stmt, 4);
+    uint8_t bundlePadding = sqlite3_column_int(stmt, 5);
+    const unsigned char* contents = sqlite3_column_text(stmt, 6);
+    for(int i = 0; i < 7; ++i){
+      std::cout << "address: "<< address << std::endl;
+      std::cout << "type: "<< type << std::endl;
+      std::cout << "layoutOrder: "<< layoutOrder << std::endl;
+      std::cout << "offset: "<< offset << std::endl;
+      std::cout << "hasInstructions: "<< hasInstructions << std::endl;
+      std::cout << "bundlePadding: "<< bundlePadding << std::endl;
+      std::cout << "contents: "<< contents << std::endl;
+    }
+  }
+  if (rc != SQLITE_DONE) {
+    std::cout<<"error: "<< sqlite3_errmsg(DB);
+  }
+  sqlite3_finalize(stmt);
+
+}
+
 void SQELF::writeRelocationToDatabase(const SQELF::Rela &R) {
   // TODO
+}
+
+void SQELF::writeFragmentToDatabase(const SQELF::Fragment &F) {
+  // int rc = sqlite3_open(":memory:", &DB);
+  // if (rc != SQLITE_OK) {
+  //   report_fatal_error("Could not create an in-memory sqlite database");
+  // }
+  int rc;
+  sqlite3_stmt *stmt;
+  const char *sql = "INSERT INTO Fragment VALUES(?, ?, ?, ?, ?, ?, ?)";
+  rc = sqlite3_prepare_v2(DB, sql, -1, &stmt, nullptr);
+  if (rc != SQLITE_OK) {
+    std::cout << sqlite3_errstr(sqlite3_extended_errcode(DB))
+              << sqlite3_errmsg(DB) << std::endl;
+    report_fatal_error(
+        "Could not prepare INSERT statement in an in-memory sqlite database");
+  }
+
+  rc |= sqlite3_bind_int64(stmt, 1, F.address);
+  rc |= sqlite3_bind_text(stmt, 2, F.type.c_str(), -1, SQLITE_STATIC);
+  rc |= sqlite3_bind_int64(stmt, 3, F.layoutOrder);
+  rc |= sqlite3_bind_int64(stmt, 4, F.offset);
+  rc |= sqlite3_bind_int64(stmt, 5, F.hasInstructions);
+  rc |= sqlite3_bind_int(stmt, 6, F.bundlePadding);
+  rc |= sqlite3_bind_text(stmt, 7, F.contents.c_str(), -1, SQLITE_STATIC);
+  if (rc != SQLITE_OK) {
+    report_fatal_error(
+        "Could not bind to the statement in an in-memory sqlite database");
+  }
+  sqlite3_finalize(stmt);
 }
 void SQELF::writeInstructionToDatabase(const SQELF::Ins &I) {
   int rc = sqlite3_open(":memory:", &DB);
@@ -109,7 +179,7 @@ void SQELF::writeInstructionToDatabase(const SQELF::Ins &I) {
   }
 
   sqlite3_stmt *stmt;
-  const char *sql = "INSERT INTO Ins VALUES(?, ?, ?, ?, ?, ?)";
+  const char *sql = "INSERT INTO Ins VALUES(?, ?, ?, ?, ?, ?, ?)";
   rc = sqlite3_prepare_v2(DB, sql, -1, &stmt, nullptr);
   if (rc != SQLITE_OK) {
     report_fatal_error(
@@ -180,5 +250,6 @@ llvm::raw_ostream &operator<<(llvm::raw_ostream &OS, SQELF &BF) {
   BF.writeInMemoryDatabaseToStream(OS);
   return OS;
 }
+
 } // namespace BinaryFormat
 } // namespace llvm

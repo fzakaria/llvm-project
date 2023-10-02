@@ -5,13 +5,13 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+#include "llvm/MC/MCAssembler.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
-#include "llvm/MC/MCAssembler.h"
 #include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCAsmLayout.h"
@@ -26,9 +26,11 @@
 #include "llvm/MC/MCFragment.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCObjectWriter.h"
+#include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCSection.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCSymbol.h"
+#include "llvm/MC/MCTargetOptions.h"
 #include "llvm/MC/MCValue.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Alignment.h"
@@ -37,6 +39,7 @@
 #include "llvm/Support/EndianStream.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/LEB128.h"
+#include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cstdint>
@@ -800,12 +803,34 @@ void MCAssembler::writeSectionData(raw_ostream &OS, const MCSection *Sec,
          OS.tell() - Start == Layout.getSectionAddressSize(Sec));
 }
 
-void MCAssembler::writeSQLSectionData(raw_ostream &OS, std::unique_ptr<llvm::BinaryFormat::SQELF>& sql,
-                                      const MCSection *Sec,
-                                      const MCAsmLayout &Layout) const {
+void MCAssembler::writeSQLSectionData(
+    raw_ostream &OS, std::unique_ptr<llvm::BinaryFormat::SQELF> &sql,
+    const MCSection *Sec, const MCAsmLayout &Layout) const {
   // ignore virtual sections
-  MCContext &CTX = Layout.getAssembler().getContext();
-  if (!Sec->isVirtualSection()) {
+  std::cout << "writeSQLSectionData" << std::endl;
+  // MCContext &CTX = Layout.getAssembler().getContext();
+  const char *TripleName = "x86_64-unknown-elf";
+  std::unique_ptr<MCRegisterInfo> MRI;
+  std::unique_ptr<MCAsmInfo> MAI;
+  std::unique_ptr<MCContext> Ctx;
+  std::unique_ptr<MCSubtargetInfo> STI;
+  std::unique_ptr<MCDisassembler> DisAsm;
+  std::string Error;
+  LLVMInitializeX86TargetInfo();
+  LLVMInitializeX86TargetMC();
+  LLVMInitializeX86Disassembler();
+  const llvm::Target *TheTarget =
+      TargetRegistry::lookupTarget(TripleName, Error);
+  MRI.reset(TheTarget->createMCRegInfo(TripleName));
+  MAI.reset(TheTarget->createMCAsmInfo(*MRI, TripleName, MCTargetOptions()));
+  STI.reset(TheTarget->createMCSubtargetInfo(TripleName, "", ""));
+  Ctx = std::make_unique<MCContext>(Triple(TripleName), MAI.get(), MRI.get(),
+                                    STI.get());
+
+  DisAsm.reset(TheTarget->createMCDisassembler(*STI, *Ctx));
+
+  if (Sec->isVirtualSection()) {
+    std::cout << "virtual section" << std::endl;
     return;
   }
 
@@ -819,196 +844,208 @@ void MCAssembler::writeSQLSectionData(raw_ostream &OS, std::unique_ptr<llvm::Bin
 
     // This variable (and its dummy usage) is to participate in the assert at
     // the end of the function.
-    uint64_t Start = OS.tell();
-    (void)Start;
+    // uint64_t Start = OS.tell();
+    //(void)Start;
 
     ++stats::EmittedFragments;
 
     switch (F.getKind()) {
-    case MCFragment::FT_Data:{
-      ++stats::EmittedDataFragments;
-      const llvm::MCSubtargetInfo &STI =
-          *(cast<MCDataFragment>(F).getSubtargetInfo());
-      llvm::MCInst Inst;
-      std::string Error;
-      const llvm::Target *TheTarget = TargetRegistry::lookupTarget(
-          STI.getTargetTriple().getTriple(), Error);
-      if (!TheTarget)
-        return;
-      auto *DisAsm = TheTarget->createMCDisassembler(STI, CTX);
-      uint64_t Size;
-
-      auto data = ArrayRef(cast<MCDataFragment>(F).getContents());
+    case MCFragment::FT_Data: {
       std::cout << "FT_Data" << std::endl;
-       DisAsm->getInstruction(
-           Inst, Size, data, 0, OS);
-      delete DisAsm;
+      ++stats::EmittedDataFragments;
+      llvm::MCInst Inst;
+      // zheyuan: note the target name is hardcoded
+      if (!TheTarget) {
+        return;
+      }
+      uint64_t Size;
+      std::cout << "get data" << std::endl;
+      auto &Fragment = cast<MCDataFragment>(F);
+      auto &Contents = Fragment.getContents();
+      std::string StringContent(Contents.begin(), Contents.end());
+      auto sql_fragment = llvm::BinaryFormat::SQELF::Fragment{
+          static_cast<uint64_t>(1234567890),
+          std::string("MCDataFragment"),
+          Fragment.getLayoutOrder(),
+          Layout.getFragmentOffset(&Fragment),
+          Fragment.hasInstructions(),
+          Fragment.getBundlePadding(),
+          StringContent};
+      sql->writeFragmentToDatabase(sql_fragment);
+      // auto &data = cast<MCDataFragment>(F).getContents();
+      // std::vector<uint8_t> u8_data(data.begin(), data.end());
+      // DisAsm->getInstruction(Inst, Size, u8_data, 0, OS);
+      // Inst.print(OS,&*MRI);
       break;
     }
 
-    case MCFragment::FT_Relaxable:{
+    case MCFragment::FT_Relaxable: {
       ++stats::EmittedRelaxableFragments;
       std::cout << "FT_Relaxable" << std::endl;
       // std::cout << cast<MCRelaxableFragment>(F).getContents();
       break;
     }
 
-    case MCFragment::FT_CompactEncodedInst:{
+    case MCFragment::FT_CompactEncodedInst: {
       ++stats::EmittedCompactEncodedInstFragments;
       std::cout << "FT_CompactEncodedInst" << std::endl;
       // std::cout << cast<MCCompactEncodedInstFragment>(F).getContents();
       break;
     }
-
-    case MCFragment::FT_Fill: {
-      ++stats::EmittedFillFragments;
-      const MCFillFragment &FF = cast<MCFillFragment>(F);
-      uint64_t V = FF.getValue();
-      unsigned VSize = FF.getValueSize();
-      const unsigned MaxChunkSize = 16;
-      char Data[MaxChunkSize];
-      assert(0 < VSize && VSize <= MaxChunkSize &&
-             "Illegal fragment fill size");
-      // Duplicate V into Data as byte vector to reduce number of
-      // writes done. As such, do endian conversion here.
-      for (unsigned I = 0; I != VSize; ++I) {
-        unsigned index = Endian == support::little ? I : (VSize - I - 1);
-        Data[I] = uint8_t(V >> (index * 8));
-      }
-      for (unsigned I = VSize; I < MaxChunkSize; ++I)
-        Data[I] = Data[I - VSize];
-
-      // Set to largest multiple of VSize in Data.
-      const unsigned NumPerChunk = MaxChunkSize / VSize;
-      // Set ChunkSize to largest multiple of VSize in Data
-      const unsigned ChunkSize = VSize * NumPerChunk;
-
-      // Do copies by chunk.
-      StringRef Ref(Data, ChunkSize);
-      for (uint64_t I = 0, E = FragmentSize / ChunkSize; I != E; ++I)
-        //OS << Ref;
-        std::cout<<"Ref"<<std::endl;
-
-        // do remainder if needed.
-        unsigned TrailingCount = FragmentSize % ChunkSize;
-      if (TrailingCount)
-        std::cout << "FT_Fill" << std::endl;
-      // OS.write(Data, TrailingCount);
-      break;
-    }
-
-    case MCFragment::FT_Nops: {
-      ++stats::EmittedNopsFragments;
-      const MCNopsFragment &NF = cast<MCNopsFragment>(F);
-
-      int64_t NumBytes = NF.getNumBytes();
-      int64_t ControlledNopLength = NF.getControlledNopLength();
-      int64_t MaximumNopLength =
-          this->getBackend().getMaximumNopSize(*NF.getSubtargetInfo());
-
-      assert(NumBytes > 0 && "Expected positive NOPs fragment size");
-      assert(ControlledNopLength >= 0 && "Expected non-negative NOP size");
-
-      if (ControlledNopLength > MaximumNopLength) {
-        this->getContext().reportError(
-            NF.getLoc(), "illegal NOP size " +
-                             std::to_string(ControlledNopLength) +
-                             ". (expected within [0, " +
-                             std::to_string(MaximumNopLength) + "])");
-        // Clamp the NOP length as reportError does not stop the execution
-        // immediately.
-        ControlledNopLength = MaximumNopLength;
-      }
-
-      // Use maximum value if the size of each NOP is not specified
-      if (!ControlledNopLength)
-        ControlledNopLength = MaximumNopLength;
-
-      while (NumBytes) {
-        uint64_t NumBytesToEmit =
-            (uint64_t)std::min(NumBytes, ControlledNopLength);
-        assert(NumBytesToEmit && "try to emit empty NOP instruction");
-        if (!this->getBackend().writeNopData(OS, NumBytesToEmit,
-                                           NF.getSubtargetInfo())) {
-          report_fatal_error("unable to write nop sequence of the remaining " +
-                             Twine(NumBytesToEmit) + " bytes");
-          break;
+      /*
+      case MCFragment::FT_Fill: {
+        ++stats::EmittedFillFragments;
+        const MCFillFragment &FF = cast<MCFillFragment>(F);
+        uint64_t V = FF.getValue();
+        unsigned VSize = FF.getValueSize();
+        const unsigned MaxChunkSize = 16;
+        char Data[MaxChunkSize];
+        assert(0 < VSize && VSize <= MaxChunkSize &&
+               "Illegal fragment fill size");
+        // Duplicate V into Data as byte vector to reduce number of
+        // writes done. As such, do endian conversion here.
+        for (unsigned I = 0; I != VSize; ++I) {
+          unsigned index = Endian == support::little ? I : (VSize - I - 1);
+          Data[I] = uint8_t(V >> (index * 8));
         }
-        NumBytes -= NumBytesToEmit;
-      }
-      break;
-    }
+        for (unsigned I = VSize; I < MaxChunkSize; ++I)
+          Data[I] = Data[I - VSize];
 
-    case MCFragment::FT_LEB: {
-      const MCLEBFragment &LF = cast<MCLEBFragment>(F);
-      std::cout << "FT_LEB" << std::endl;
-      // OS << LF.getContents();
-      break;
-    }
+        // Set to largest multiple of VSize in Data.
+        const unsigned NumPerChunk = MaxChunkSize / VSize;
+        // Set ChunkSize to largest multiple of VSize in Data
+        const unsigned ChunkSize = VSize * NumPerChunk;
 
-    case MCFragment::FT_BoundaryAlign: {
-      const MCBoundaryAlignFragment &BF = cast<MCBoundaryAlignFragment>(F);
-      if (!this->getBackend().writeNopData(OS, FragmentSize,
-                                         BF.getSubtargetInfo()))
-        report_fatal_error("unable to write nop sequence of " +
-                           Twine(FragmentSize) + " bytes");
-      break;
-    }
+        // Do copies by chunk.
+        StringRef Ref(Data, ChunkSize);
+        for (uint64_t I = 0, E = FragmentSize / ChunkSize; I != E; ++I)
+          //OS << Ref;
+          std::cout<<"Ref"<<std::endl;
 
-    case MCFragment::FT_SymbolId: {
-      const MCSymbolIdFragment &SF = cast<MCSymbolIdFragment>(F);
-      support::endian::write<uint32_t>(OS, SF.getSymbol()->getIndex(), Endian);
-      break;
-    }
-
-    case MCFragment::FT_Org: {
-      ++stats::EmittedOrgFragments;
-      const MCOrgFragment &OF = cast<MCOrgFragment>(F);
-
-      for (uint64_t i = 0, e = FragmentSize; i != e; ++i)
-        // OS << char(OF.getValue());
-
+          // do remainder if needed.
+          unsigned TrailingCount = FragmentSize % ChunkSize;
+        if (TrailingCount)
+          std::cout << "FT_Fill" << std::endl;
+        // OS.write(Data, TrailingCount);
         break;
-    }
+      }
 
-    case MCFragment::FT_Dwarf: {
-      const MCDwarfLineAddrFragment &OF = cast<MCDwarfLineAddrFragment>(F);
-      std::cout << "FT_Dwarf" << std::endl;
-      // OS << OF.getContents();
-      break;
-    }
-    case MCFragment::FT_DwarfFrame: {
-      const MCDwarfCallFrameFragment &CF = cast<MCDwarfCallFrameFragment>(F);
-      std::cout << "FT_DwarfFrame" << std::endl;
-      // OS << CF.getContents();
-      break;
-    }
-    case MCFragment::FT_CVInlineLines: {
-      const auto &OF = cast<MCCVInlineLineTableFragment>(F);
-      std::cout << "FT_CVInlineLines" << std::endl;
-      // OS << OF.getContents();
-      break;
-    }
-    case MCFragment::FT_CVDefRange: {
-      const auto &DRF = cast<MCCVDefRangeFragment>(F);
-      std::cout << "FT_CVDefRange" << std::endl;
-      // OS << DRF.getContents();
-      break;
-    }
-    case MCFragment::FT_PseudoProbe: {
-      const MCPseudoProbeAddrFragment &PF = cast<MCPseudoProbeAddrFragment>(F);
-      std::cout << "FT_PseudoProbe" << std::endl;
-      // OS << PF.getContents();
-      break;
-    }
-    case MCFragment::FT_Dummy: {
-      llvm_unreachable("Should not have been added");
-    }
+      case MCFragment::FT_Nops: {
+        ++stats::EmittedNopsFragments;
+        const MCNopsFragment &NF = cast<MCNopsFragment>(F);
+
+        int64_t NumBytes = NF.getNumBytes();
+        int64_t ControlledNopLength = NF.getControlledNopLength();
+        int64_t MaximumNopLength =
+            this->getBackend().getMaximumNopSize(*NF.getSubtargetInfo());
+
+        assert(NumBytes > 0 && "Expected positive NOPs fragment size");
+        assert(ControlledNopLength >= 0 && "Expected non-negative NOP size");
+
+        if (ControlledNopLength > MaximumNopLength) {
+          this->getContext().reportError(
+              NF.getLoc(), "illegal NOP size " +
+                               std::to_string(ControlledNopLength) +
+                               ". (expected within [0, " +
+                               std::to_string(MaximumNopLength) + "])");
+          // Clamp the NOP length as reportError does not stop the execution
+          // immediately.
+          ControlledNopLength = MaximumNopLength;
+        }
+
+        // Use maximum value if the size of each NOP is not specified
+        if (!ControlledNopLength)
+          ControlledNopLength = MaximumNopLength;
+
+        while (NumBytes) {
+          uint64_t NumBytesToEmit =
+              (uint64_t)std::min(NumBytes, ControlledNopLength);
+          assert(NumBytesToEmit && "try to emit empty NOP instruction");
+          if (!this->getBackend().writeNopData(OS, NumBytesToEmit,
+                                             NF.getSubtargetInfo())) {
+            report_fatal_error("unable to write nop sequence of the remaining "
+      + Twine(NumBytesToEmit) + " bytes"); break;
+          }
+          NumBytes -= NumBytesToEmit;
+        }
+        break;
+      }
+
+      case MCFragment::FT_LEB: {
+        const MCLEBFragment &LF = cast<MCLEBFragment>(F);
+        std::cout << "FT_LEB" << std::endl;
+        // OS << LF.getContents();
+        break;
+      }
+
+      case MCFragment::FT_BoundaryAlign: {
+        const MCBoundaryAlignFragment &BF = cast<MCBoundaryAlignFragment>(F);
+        if (!this->getBackend().writeNopData(OS, FragmentSize,
+                                           BF.getSubtargetInfo()))
+          report_fatal_error("unable to write nop sequence of " +
+                             Twine(FragmentSize) + " bytes");
+        break;
+      }
+
+      case MCFragment::FT_SymbolId: {
+        const MCSymbolIdFragment &SF = cast<MCSymbolIdFragment>(F);
+        std::cout<<"FT_SymbolId"<<std::endl;
+        support::endian::write<uint32_t>(OS, SF.getSymbol()->getIndex(),
+      Endian); break;
+      }
+
+      case MCFragment::FT_Org: {
+        ++stats::EmittedOrgFragments;
+        const MCOrgFragment &OF = cast<MCOrgFragment>(F);
+        std::cout<<"FT_Org"<<std::endl;
+        for (uint64_t i = 0, e = FragmentSize; i != e; ++i)
+          // OS << char(OF.getValue());
+
+          break;
+      }
+
+      case MCFragment::FT_Dwarf: {
+        const MCDwarfLineAddrFragment &OF = cast<MCDwarfLineAddrFragment>(F);
+        std::cout << "FT_Dwarf" << std::endl;
+        // OS << OF.getContents();
+        break;
+      }
+      case MCFragment::FT_DwarfFrame: {
+        const MCDwarfCallFrameFragment &CF = cast<MCDwarfCallFrameFragment>(F);
+        std::cout << "FT_DwarfFrame" << std::endl;
+        // OS << CF.getContents();
+        break;
+      }
+      case MCFragment::FT_CVInlineLines: {
+        const auto &OF = cast<MCCVInlineLineTableFragment>(F);
+        std::cout << "FT_CVInlineLines" << std::endl;
+        // OS << OF.getContents();
+        break;
+      }
+      case MCFragment::FT_CVDefRange: {
+        const auto &DRF = cast<MCCVDefRangeFragment>(F);
+        std::cout << "FT_CVDefRange" << std::endl;
+        // OS << DRF.getContents();
+        break;
+      }
+      case MCFragment::FT_PseudoProbe: {
+        const MCPseudoProbeAddrFragment &PF =
+      cast<MCPseudoProbeAddrFragment>(F); std::cout << "FT_PseudoProbe" <<
+      std::endl;
+        // OS << PF.getContents();
+        break;
+      }
+      case MCFragment::FT_Dummy: {
+        llvm_unreachable("Should not have been added");
+      }
+      */
     }
 
     // assert(OS.tell() - Start == FragmentSize &&
     //       "The stream should advance by fragment size");
   }
+  std::cout << "end of function" << std::endl;
+  sql->viewFragmentTable();
 }
 
 std::tuple<MCValue, uint64_t, bool>

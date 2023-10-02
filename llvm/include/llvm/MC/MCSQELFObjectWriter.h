@@ -59,13 +59,17 @@ public:
   
   virtual unsigned getRelocType(MCContext &Ctx, const MCValue &Target,
                               const MCFixup &Fixup, bool IsPCRel) const = 0;
-
+  uint8_t getOSABI() const { return OSABI; }
+  uint8_t getABIVersion() const { return ABIVersion; }
+  uint16_t getEMachine() const { return EMachine; }
   virtual bool needsRelocateWithSymbol(const MCSymbol &Sym,
                                        unsigned Type) const;
                                        
   virtual void addTargetSectionFlags(MCContext &Ctx, MCSectionELF &Sec);
   bool hasRelocationAddend() const { return HasRelocationAddend; }
-
+  virtual MCSectionELF *getMemtagRelocsSection(MCContext &Ctx) const {
+    return nullptr;
+  }
 };
 
 /// Construct a new SQELF writer instance.
