@@ -46,6 +46,7 @@
 #include <iostream>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 using namespace llvm;
 
@@ -861,16 +862,17 @@ void MCAssembler::writeSQLSectionData(
       uint64_t Size;
       std::cout << "get data" << std::endl;
       auto &Fragment = cast<MCDataFragment>(F);
-      auto &Contents = Fragment.getContents();
-      std::string StringContent(Contents.begin(), Contents.end());
+      //Fragment.dump();
+      std::vector<char> data(Fragment.getContents().begin(), Fragment.getContents().end());
+      data.emplace_back('\0');
       auto sql_fragment = llvm::BinaryFormat::SQELF::Fragment{
-          static_cast<uint64_t>(1234567890),
+          reinterpret_cast<uintptr_t>(&Fragment),
           std::string("MCDataFragment"),
           Fragment.getLayoutOrder(),
           Layout.getFragmentOffset(&Fragment),
           Fragment.hasInstructions(),
           Fragment.getBundlePadding(),
-          StringContent};
+          data.data()};
       sql->writeFragmentToDatabase(sql_fragment);
       // auto &data = cast<MCDataFragment>(F).getContents();
       // std::vector<uint8_t> u8_data(data.begin(), data.end());

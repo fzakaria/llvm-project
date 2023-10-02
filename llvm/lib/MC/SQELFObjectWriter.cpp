@@ -171,7 +171,7 @@ public:
                           const SectionIndexMapTy &SectionIndexMap,
                           const RevGroupMapTy &RevGroupMap,
                           SectionOffsetsTy &SectionOffsets);
-
+ 
   void writeAddrsigSection();
 
   MCSectionELF *createRelocationSection(MCContext &Ctx,

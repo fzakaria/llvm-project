@@ -42,7 +42,7 @@ public:
     uint64_t offset;
     bool hasInstructions;
     uint8_t bundlePadding;
-    std::string& contents;
+    const char* contents;
   } Fragment;
 
 

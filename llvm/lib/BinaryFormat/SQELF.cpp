@@ -114,14 +114,19 @@ void SQELF::viewFragmentTable() {
     std::cout<<"error: "<< sqlite3_errmsg(DB);
     return;
   }
+  int i = 0;
   while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+    ++i;
     uint64_t address = sqlite3_column_int(stmt, 0);
     const unsigned char* type = sqlite3_column_text(stmt, 1);
     unsigned int layoutOrder = sqlite3_column_int(stmt, 2);
     uint64_t offset = sqlite3_column_int(stmt, 3);
     bool hasInstructions = sqlite3_column_int(stmt, 4);
-    uint8_t bundlePadding = sqlite3_column_int(stmt, 5);
-    const unsigned char* contents = sqlite3_column_text(stmt, 6);
+    const void* bundleBlobData = sqlite3_column_blob(stmt, 5);
+    uint8_t bundlePadding = *static_cast<const uint8_t*>(bundleBlobData);
+      const void* contentsBlobData = sqlite3_column_blob(stmt, 6);
+      const char* contents = static_cast<const char*>(contentsBlobData);
+
     for(int i = 0; i < 7; ++i){
       std::cout << "address: "<< address << std::endl;
       std::cout << "type: "<< type << std::endl;
@@ -132,6 +137,7 @@ void SQELF::viewFragmentTable() {
       std::cout << "contents: "<< contents << std::endl;
     }
   }
+  std::cout<<"i: "<<i<<std::endl;
   if (rc != SQLITE_DONE) {
     std::cout<<"error: "<< sqlite3_errmsg(DB);
   }
@@ -148,6 +154,7 @@ void SQELF::writeFragmentToDatabase(const SQELF::Fragment &F) {
   // if (rc != SQLITE_OK) {
   //   report_fatal_error("Could not create an in-memory sqlite database");
   // }
+  std::cout <<"write fragment to database"<<std::endl;
   int rc;
   sqlite3_stmt *stmt;
   const char *sql = "INSERT INTO Fragment VALUES(?, ?, ?, ?, ?, ?, ?)";
@@ -165,10 +172,17 @@ void SQELF::writeFragmentToDatabase(const SQELF::Fragment &F) {
   rc |= sqlite3_bind_int64(stmt, 4, F.offset);
   rc |= sqlite3_bind_int64(stmt, 5, F.hasInstructions);
   rc |= sqlite3_bind_int(stmt, 6, F.bundlePadding);
-  rc |= sqlite3_bind_text(stmt, 7, F.contents.c_str(), -1, SQLITE_STATIC);
+  rc |= sqlite3_bind_blob(stmt, 7, F.contents, -1, SQLITE_STATIC);
   if (rc != SQLITE_OK) {
     report_fatal_error(
         "Could not bind to the statement in an in-memory sqlite database");
+  }
+  std::cout<<"Contents: "<<F.contents<<std::endl;
+  if (sqlite3_step(stmt) != SQLITE_DONE) {
+    std::cout << sqlite3_errstr(sqlite3_extended_errcode(DB))
+              << sqlite3_errmsg(DB) << std::endl;
+    report_fatal_error(
+        "Could not step to the statement in an in-memory sqlite database");
   }
   sqlite3_finalize(stmt);
 }
