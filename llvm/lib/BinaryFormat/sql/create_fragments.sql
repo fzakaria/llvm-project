@@ -5,6 +5,6 @@ CREATE TABLE IF NOT EXISTS Fragment (
     layoutOrder INTEGER,
     offset INTEGER,
     hasInstructions INTEGER,
-    bundlePadding INTEGER,
+    bundlePadding BLOB,
     contents BLOB
 );)"

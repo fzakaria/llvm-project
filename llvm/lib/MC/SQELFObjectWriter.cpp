@@ -453,6 +453,7 @@ uint64_t SQELFWriter::writeObject(MCAssembler &Asm,
   //              NumSectionsOffset);
 
   //return W.OS.tell() - StartOffset;
+  Sqelf->viewFragmentTable();
 
  return 0;
 }

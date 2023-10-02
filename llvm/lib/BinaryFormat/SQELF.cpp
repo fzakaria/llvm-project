@@ -114,9 +114,7 @@ void SQELF::viewFragmentTable() {
     std::cout<<"error: "<< sqlite3_errmsg(DB);
     return;
   }
-  int i = 0;
   while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-    ++i;
     uint64_t address = sqlite3_column_int(stmt, 0);
     const unsigned char* type = sqlite3_column_text(stmt, 1);
     unsigned int layoutOrder = sqlite3_column_int(stmt, 2);
@@ -137,7 +135,6 @@ void SQELF::viewFragmentTable() {
       std::cout << "contents: "<< contents << std::endl;
     }
   }
-  std::cout<<"i: "<<i<<std::endl;
   if (rc != SQLITE_DONE) {
     std::cout<<"error: "<< sqlite3_errmsg(DB);
   }

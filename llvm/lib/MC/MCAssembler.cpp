@@ -1047,7 +1047,6 @@ void MCAssembler::writeSQLSectionData(
     //       "The stream should advance by fragment size");
   }
   std::cout << "end of function" << std::endl;
-  sql->viewFragmentTable();
 }
 
 std::tuple<MCValue, uint64_t, bool>
