@@ -132,7 +132,44 @@ Note: The jump table base address load still uses 32-bit PC-relative addressing
 (`leaq table(%rip), %rax`). For extremely large binaries where both .text AND
 .rodata exceed 2GiB, use `-fno-jump-tables` as a workaround.
 
-### 8. End-to-End Integration Tests (uncommitted)
+### 8. Constant Pool and Local Data GOTOFF Addressing (uncommitted)
+Modified the compiler to use GOTOFF addressing for constant pools, jump tables, and labels
+when using medium code model with `LargeDataThreshold=0`:
+
+**Problem:**
+When using `-mcmodel=medium -mlarge-data-threshold=0`, local data like constant pools,
+jump tables, and labels still used RIP-relative addressing (`MO_NO_FLAG`). This causes
+`R_X86_64_PC32` relocations that overflow when the constant pool is >2GiB from the code.
+
+**X86Subtarget.cpp changes:**
+- Modified `classifyLocalReference()` to check for `CM == CodeModel::Medium && TM.getLargeDataThreshold() == 0`
+- When this condition is true and `GV == nullptr` (constant pools, jump tables, labels), return `MO_GOTOFF`
+
+**TargetMachine.h changes:**
+- Added `getLargeDataThreshold()` getter to access the LargeDataThreshold value
+
+**Effect:**
+When compiling with `-mcmodel=medium -mlarge-data-threshold=0 -fPIC`:
+```asm
+# Before (RIP-relative, can overflow):
+movsd .LCPI0_0(%rip), %xmm0
+
+# After (GOTOFF, no overflow):
+leaq _GLOBAL_OFFSET_TABLE_(%rip), %rax
+movsd .LCPI0_0@GOTOFF(%rax), %xmm0
+```
+
+This applies to:
+- Floating point constants (materialized in constant pool)
+- Vector constants
+- Jump table base addresses
+- Internal labels
+
+Key files modified:
+- llvm/include/llvm/Target/TargetMachine.h - Added getLargeDataThreshold() getter
+- llvm/lib/Target/X86/X86Subtarget.cpp - Modified classifyLocalReference() for GOTOFF
+
+### 9. End-to-End Integration Tests (uncommitted)
 Added end-to-end tests that compile C/C++ code with clang and link with lld:
 
 - `e2e-medium-mcmodel-basic.test` - Tests thunks with multiple object files

@@ -45,9 +45,9 @@ When linking very large binaries where the `.text` section exceeds 2GiB, several
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│                          Address Space                            │
+│                          Address Space                           │
 ├──────────────────────────────────────────────────────────────────┤
-│  0x0                                                              │
+│  0x0                                                             │
 │  ├─── .text (caller) ────┐                                       │
 │  │    call far_func      │                                       │
 │  │    ↓                  │                                       │
@@ -471,6 +471,7 @@ The changes described in this document extend the medium code model's capabiliti
 4. **Compiler sdata8 encodings** for medium code model exception handling (LSDA, personality, TType)
 5. **Multiple GOT support** for data access when GOT is >2GiB away (proof-of-concept)
 6. **64-bit jump tables** for medium code model to prevent overflow in switch statements
+7. **Constant pool GOTOFF addressing** for medium code model with `LargeDataThreshold=0`
 
 Together with careful linker script layout, these changes enable linking of very large monolithic binaries without resorting to the performance-impacting large code model.
 
@@ -624,6 +625,90 @@ This means the jump table itself must be within 2GiB of the code that uses it. F
 #### Files Modified
 
 - `llvm/lib/Target/X86/X86ISelLoweringCall.cpp` - Jump table encoding selection
+
+---
+
+### Compiler Changes: Constant Pool GOTOFF Addressing
+
+**Problem:** Floating point constants and other data that ends up in the constant pool (`.rodata.cst*`) uses RIP-relative addressing by default. When the constant pool is >2GiB from the code, the `R_X86_64_PC32` relocation overflows.
+
+**Solution:** Modified `classifyLocalReference()` to use GOTOFF addressing for constant pools, jump tables, and labels when using medium code model with `LargeDataThreshold=0`.
+
+#### Changes to X86Subtarget.cpp
+
+```cpp
+unsigned char
+X86Subtarget::classifyLocalReference(const GlobalValue *GV) const {
+  CodeModel::Model CM = TM.getCodeModel();
+  // ...
+  if (is64Bit()) {
+    if (isTargetELF()) {
+      // Large code model always uses GOTOFF
+      if (CM == CodeModel::Large)
+        return X86II::MO_GOTOFF;
+      // GlobalValues use GOTOFF if large, otherwise RIP-relative
+      if (GV)
+        return TM.isLargeGlobalValue(GV) ? X86II::MO_GOTOFF : X86II::MO_NO_FLAG;
+      // GV == nullptr is for constant pools, jump tables, labels
+      // With LargeDataThreshold=0, assume all data could be far away
+      if (CM == CodeModel::Medium && TM.getLargeDataThreshold() == 0)
+        return X86II::MO_GOTOFF;
+      return X86II::MO_NO_FLAG;
+    }
+    // ...
+  }
+}
+```
+
+The key insight is that when `GV == nullptr`, we're dealing with constant pools, jump tables, and internal labels. For medium code model with `LargeDataThreshold=0`, we treat these as potentially far away and use GOTOFF.
+
+#### Changes to TargetMachine.h
+
+Added a getter for the `LargeDataThreshold` value:
+
+```cpp
+uint64_t getLargeDataThreshold() const { return LargeDataThreshold; }
+```
+
+This allows `classifyLocalReference()` to check the threshold.
+
+#### Effect on Generated Code
+
+```
+Before (medium code model, RIP-relative):
+┌────────────────────────────────────────────────────────────────────────┐
+│  get_pi:                                                                │
+│      movsd .LCPI0_0(%rip), %xmm0   # R_X86_64_PC32 - can overflow      │
+│      retq                                                               │
+└────────────────────────────────────────────────────────────────────────┘
+
+After (medium code model with -mlarge-data-threshold=0):
+┌────────────────────────────────────────────────────────────────────────┐
+│  get_pi:                                                                │
+│      leaq _GLOBAL_OFFSET_TABLE_(%rip), %rax   # Get GOT base           │
+│      movsd .LCPI0_0@GOTOFF(%rax), %xmm0       # GOTOFF access          │
+│      retq                                                               │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+#### What This Affects
+
+- **Floating point constants**: `double pi = 3.14159...` loads from constant pool
+- **Vector constants**: SSE/AVX immediate values materialized from memory
+- **Jump table base addresses**: Switch statement dispatch tables
+- **Internal labels**: Various compiler-generated local data
+
+#### Usage
+
+```bash
+# Enable GOTOFF for all local data
+clang -mcmodel=medium -mlarge-data-threshold=0 -fPIC -c source.c -o source.o
+```
+
+#### Files Modified
+
+- `llvm/include/llvm/Target/TargetMachine.h` - Added `getLargeDataThreshold()` getter
+- `llvm/lib/Target/X86/X86Subtarget.cpp` - Modified `classifyLocalReference()` for GOTOFF
 
 ---
 
@@ -840,6 +925,7 @@ For massive binaries, TLS is not typically the bottleneck:
 | `.eh_frame` | Personality | sdata4 | **FIXED** - sdata8 with medium code model |
 | `.gcc_except_table` | TType | sdata4 | **FIXED** - sdata8 with medium code model |
 | `.eh_frame_hdr` | Table entries | sdata4 | **FIXED** - sdata8 with `--eh-frame-hdr-format=sdata8` |
+| `.rodata.cst*` | Constant pool access | 32-bit PC-rel | **FIXED** - GOTOFF with `-mlarge-data-threshold=0` |
 | `.debug_*` | Various | DWARF varies | Non-ALLOC, no runtime impact |
 | `.got` | Entry access | 32-bit GOTPCREL | **FIXED** - Multi-GOT proof-of-concept |
 | `.plt` | Branch to GOT | 32-bit offset | Already uses GOT |
@@ -871,6 +957,8 @@ This document outlines a comprehensive approach to extending the x86-64 medium c
 3. **Multiple GOTs**: Handle unlimited code spread for data access through GOT
 4. **Thunks for GOT Calls**: Optimize indirect calls through far GOT entries
 5. **Compiler sdata8 for Medium Code Model**: Exception handling data (LSDA, personality, TType, FDE) now uses 64-bit encodings
+6. **64-bit Jump Tables**: Medium code model uses 64-bit jump table entries to prevent overflow
+7. **Constant Pool GOTOFF**: Medium code model with `LargeDataThreshold=0` uses GOTOFF for constant pools, eliminating RIP-relative overflow
 
 With these techniques, the medium code model can theoretically support binaries of arbitrary size, limited only by the x86-64 virtual address space (128 TiB on most systems).
 
