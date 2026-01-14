@@ -1408,12 +1408,51 @@ void RetpolineZNow::writePlt(uint8_t *buf, const Symbol &sym,
 // For x86-64, thunks are needed when the displacement between the branch
 // instruction and its target exceeds the 32-bit signed range (2GiB).
 // This can happen in very large binaries where .text exceeds 2GiB.
+//
+// Additionally, thunks are needed for GOT-relative call/jmp instructions
+// (R_RELAX_GOT_PC) when the GOT entry is more than 2GiB away. In this case,
+// we convert the indirect call through GOT to a direct call through thunk.
 bool X86_64::needsThunk(RelExpr expr, RelType type, const InputFile *file,
                         uint64_t branchAddr, const Symbol &s,
                         int64_t a) const {
-  // Only branch relocations need thunks
-  if (type != R_X86_64_PLT32 && type != R_X86_64_PC32)
+  // Handle R_RELAX_GOT_PC (call *foo@GOTPCREL(%rip) or jmp *foo@GOTPCREL(%rip))
+  //
+  // R_RELAX_GOT_PC means the linker decided to relax the indirect GOT access
+  // to a direct call/jmp. But if the target is more than 2GiB away, the
+  // relaxed direct call will also overflow. In that case, we use a thunk.
+  //
+  // Note: R_RELAX_GOT_PC is also used for "mov foo@GOTPCREL(%rip), %reg" which
+  // loads an address value. We can only use thunks for call/jmp (function
+  // symbols), not for mov (data access). We use isFunc() as a heuristic to
+  // distinguish these cases - function symbols are typically call targets.
+  if (expr == R_RELAX_GOT_PC) {
+    // Only create thunks for function symbols (call/jmp targets)
+    // For data symbols (mov targets), thunks don't help as we need the address
+    // value, not control flow transfer. Let those fail with the normal error.
+    if (!s.isFunc())
+      return false;
+
+    // For relaxed GOT access (R_RELAX_GOT_PC), check if the target symbol
+    // is within range. The addend for GOTPCRELX is typically -4.
+    uint64_t dst = s.getVA(ctx, a);
+    return !inBranchRange(type, branchAddr, dst);
+  }
+
+  // Only branch relocations need thunks.
+  // R_X86_64_PLT32 is used for call/jmp instructions and always needs thunks.
+  // R_X86_64_PC32 is more general and can be used for both branches and data
+  // accesses (lea, mov). We only create thunks for function symbols.
+  if (type == R_X86_64_PLT32) {
+    // PLT32 is used for call/jmp - always consider for thunk
+  } else if (type == R_X86_64_PC32) {
+    // PC32 can be used for both branches (call foo) and data access (lea foo).
+    // Only create thunks for function symbols. For data accesses, the user
+    // needs to use a different approach (e.g., load via GOT).
+    if (!s.isFunc())
+      return false;
+  } else {
     return false;
+  }
 
   // If the target requires a PLT entry, check if we can reach the PLT
   if (s.isInPlt(ctx)) {

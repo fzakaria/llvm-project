@@ -1544,9 +1544,12 @@ template <class ELFT> void Writer<ELFT>::finalizeAddressDependentContent() {
   // the final addresses are unavailable.
   uint32_t pass = 0, assignPasses = 0;
   while (!ctx.arg.relocatable) {
-    bool changed = ctx.target->needsThunks
-                       ? tc.createThunks(pass, ctx.outputSections)
-                       : ctx.target->relaxOnce(pass);
+    bool changed = false;
+    if (ctx.target->needsThunks)
+      changed |= tc.createThunks(pass, ctx.outputSections);
+    // Always call relaxOnce - it handles GOT relaxation fallback for x86-64
+    // when GOTPCREL would overflow. This is needed even when thunks are used.
+    changed |= ctx.target->relaxOnce(pass);
     bool spilled = ctx.script->spillSections();
     changed |= spilled;
     ++pass;

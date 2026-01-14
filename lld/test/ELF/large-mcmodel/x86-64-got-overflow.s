@@ -1,9 +1,14 @@
 # REQUIRES: x86
-# Test demonstrating GOT relocation overflow.
+# Test demonstrating GOT relocation overflow for data access.
 #
 # When using the medium code model, GOT-relative accesses use R_X86_64_GOTPCREL
 # (32-bit PC-relative). When the GOT is more than 2GiB away from the code
 # accessing it, the relocation overflows.
+#
+# Note: For call/jmp instructions through GOT, the linker can use thunks to
+# handle overflow. But for mov instructions (loading addresses), thunks cannot
+# help and the relocation must fail. This test demonstrates the mov case.
+# See x86-64-got-call-overflow.s for the call case that uses thunks.
 
 # RUN: split-file %s %t
 # RUN: llvm-mc -filetype=obj -triple=x86_64-unknown-linux %t/main.s -o %t/main.o

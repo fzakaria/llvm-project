@@ -185,6 +185,10 @@ static RelExpr fromPlt(RelExpr expr) {
     return R_GOTPLTREL;
   case R_PLT_GOTREL:
     return R_GOTREL;
+  case R_RELAX_GOT_PC:
+    // When a call/jmp through GOT is redirected to a thunk (because the GOT
+    // is out of range), we want a simple PC-relative relocation to the thunk.
+    return R_PC;
   default:
     return expr;
   }
