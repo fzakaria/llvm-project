@@ -60,26 +60,41 @@ Tests:
 - `x86-64-got-call-overflow.s` - Demonstrates thunk usage for GOT call overflow
 - Updated `x86-64-got-overflow.s` - Documents that mov case still fails
 
-### 5. Multiple GOT Support (commit d56427c0c912)
-Infrastructure added for multiple GOT support when primary GOT is >2GiB from some code:
-- Added `X86_64SecondaryGotSection` class in SyntheticSections.h/cpp
-- Added `X86_64MultiGotManager` class to track GOT accesses and create secondary GOTs
-- Manager is initialized in createSyntheticSections() for EM_X86_64
-- Detection logic added in X86_64::relaxOnce() to find R_GOT_PC overflow
-- Relocation resolution updated in InputSection::getRelocTargetVA()
-- Test: x86-64-multi-got.s
+### 5. Multiple GOT Support with R_SECONDARY_GOT_PC (uncommitted)
+Refactored the multi-GOT infrastructure to use a dedicated relocation expression:
 
-Key files modified:
-- lld/ELF/SyntheticSections.h - Added X86_64SecondaryGotSection, X86_64MultiGotManager
-- lld/ELF/SyntheticSections.cpp - Implementation of secondary GOT classes
-- lld/ELF/Config.h - Added x86_64MultiGot to InStruct
-- lld/ELF/Arch/X86_64.cpp - Added overflow detection in relaxOnce()
-- lld/ELF/InputSection.cpp - Updated R_GOT_PC handling for multi-GOT
+**Problem:**
+The original multi-GOT implementation checked for overflow at resolution time for every
+R_GOT_PC relocation, adding overhead and complexity to the hot path.
 
-Status: Basic infrastructure in place. For production use, additional work needed on:
-- Dynamic relocation duplication for secondary GOT entries
-- Proper section placement algorithms
-- More comprehensive testing with actual large binaries
+**Solution:**
+Introduced `R_SECONDARY_GOT_PC` relocation expression to explicitly mark relocations
+that need secondary GOT access:
+
+1. **New expression `R_SECONDARY_GOT_PC`**: Added to Relocations.h to identify GOT accesses
+   that should use a secondary GOT instead of the primary.
+
+2. **Expression-based approach**: During `relaxOnce()`, when we detect R_GOT_PC overflow,
+   we change the expression to R_SECONDARY_GOT_PC. This makes the relocation self-documenting.
+
+3. **Registry with binary search**: Secondary GOTs are stored in a sorted vector for
+   O(log n) nearest-GOT lookup via `findNearestGot()`.
+
+4. **Clean resolution**: `getRelocTargetVA()` simply dispatches R_SECONDARY_GOT_PC to
+   `getSecondaryGotEntryAddr()` without any complex checks.
+
+**Key methods added to X86_64MultiGotManager:**
+- `finalizePlacement()`: Sort secondary GOTs by VA after layout
+- `findNearestGot()`: Binary search for nearest reachable secondary GOT
+- `getSecondaryGotEntryAddr()`: Get entry address from nearest secondary GOT
+
+**Files modified:**
+- lld/ELF/Relocations.h - Added R_SECONDARY_GOT_PC expression
+- lld/ELF/Relocations.cpp - Added R_SECONDARY_GOT_PC to needsGot()
+- lld/ELF/SyntheticSections.h - Added new methods to X86_64MultiGotManager
+- lld/ELF/SyntheticSections.cpp - Implemented registry and lookup methods
+- lld/ELF/Arch/X86_64.cpp - Changed expr to R_SECONDARY_GOT_PC on overflow
+- lld/ELF/InputSection.cpp - Added R_SECONDARY_GOT_PC resolution
 
 ### 6. Compiler Changes: Medium Code Model Exception Handling (uncommitted)
 Modified LLVM codegen to use sdata8 (64-bit) encodings for exception handling data

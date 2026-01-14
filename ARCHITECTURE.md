@@ -755,27 +755,60 @@ The solution is to create secondary GOT sections placed throughout the address s
 
 ### Implementation Approach
 
-1. **During relocation scanning**: Track which symbols need GOT entries and from which code regions they are accessed
+The multi-GOT implementation uses a dedicated relocation expression `R_SECONDARY_GOT_PC` for clean separation:
 
-2. **After initial layout**: Identify which code regions would overflow when accessing the primary GOT
+1. **During `relaxOnce()`**: Scan R_GOT_PC relocations and detect overflow
+   ```cpp
+   if (!isInt<32>(gotEntry + addend - p)) {
+     rel.expr = R_SECONDARY_GOT_PC;  // Mark for secondary GOT
+     recordGotAccess(*rel.sym, p);    // Track for GOT creation
+   }
+   ```
 
-3. **Create secondary GOTs**: For each region that cannot reach the primary GOT, create a secondary GOT section placed within 1.5GiB of that region
+2. **Create secondary GOTs**: For each region with overflow, create secondary GOT sections
 
-4. **Populate secondary GOTs**: Copy the needed GOT entries to each secondary GOT. Dynamic relocations must be duplicated as well.
+3. **Finalize placement**: Sort secondary GOTs by VA for binary search
+   ```cpp
+   ctx.in.x86_64MultiGot->finalizePlacement();
+   ```
 
-5. **Redirect relocations**: Update the relocation expression to use the nearest GOT entry instead of the primary GOT
+4. **Resolution**: Handle R_SECONDARY_GOT_PC separately in `getRelocTargetVA()`
+   ```cpp
+   case R_SECONDARY_GOT_PC:
+     return ctx.in.x86_64MultiGot->getSecondaryGotEntryAddr(*r.sym, p) + a - p;
+   ```
 
-### Relocation Resolution for Multi-GOT
+### R_SECONDARY_GOT_PC Expression
 
-When calculating `R_GOT_PC`:
+A new internal relocation expression that explicitly marks GOT accesses needing secondary GOT:
 
+| Expression | Meaning | Resolution |
+|------------|---------|------------|
+| `R_GOT_PC` | Access through primary GOT | `sym.getGotVA() + a - p` |
+| `R_SECONDARY_GOT_PC` | Access through secondary GOT | `findNearestGot(p)->getEntry(sym) + a - p` |
+
+Benefits:
+- **Self-documenting**: Relocation type indicates which GOT to use
+- **Clean hot path**: No overflow checking during resolution
+- **Efficient lookup**: Binary search for nearest GOT (O(log n))
+
+### Secondary GOT Registry
+
+The `X86_64MultiGotManager` maintains a registry of secondary GOTs sorted by VA:
+
+```cpp
+class X86_64MultiGotManager {
+  // Sorted by VA for binary search
+  SmallVector<std::pair<uint64_t, X86_64SecondaryGotSection *>, 0> sortedGots;
+
+  X86_64SecondaryGotSection *findNearestGot(uint64_t accessAddr) const {
+    // Binary search for nearest GOT within 2GiB
+    auto it = llvm::lower_bound(sortedGots, accessAddr, ...);
+    // Check candidates before and after
+    return best;
+  }
+};
 ```
-Standard: sym->getGotVA(ctx) + addend - P
-
-Multi-GOT: getNearestGotEntry(sym, P) + addend - P
-```
-
-Where `getNearestGotEntry(sym, P)` returns the address of the GOT entry for `sym` that is closest to address `P`.
 
 ### Dynamic Relocations
 
@@ -790,13 +823,14 @@ Secondary GOT 1: R_X86_64_GLOB_DAT targeting symbol (duplicate)
 
 The dynamic linker will populate all copies with the same resolved address.
 
-### Files to Modify
+### Files Modified
 
-- `lld/ELF/SyntheticSections.h` - Add `X86_64SecondaryGotSection` class
-- `lld/ELF/SyntheticSections.cpp` - Implement secondary GOT creation
-- `lld/ELF/Relocations.cpp` - Track GOT accesses by code region
-- `lld/ELF/Writer.cpp` - Create secondary GOTs in `finalizeAddressDependentContent`
-- `lld/ELF/InputSection.cpp` - Modify `getRelocTargetVA` to use nearest GOT
+- `lld/ELF/Relocations.h` - Added `R_SECONDARY_GOT_PC` expression
+- `lld/ELF/Relocations.cpp` - Added `R_SECONDARY_GOT_PC` to `needsGot()`
+- `lld/ELF/SyntheticSections.h` - Added `finalizePlacement()`, `findNearestGot()`, `getSecondaryGotEntryAddr()`
+- `lld/ELF/SyntheticSections.cpp` - Implemented registry and lookup methods
+- `lld/ELF/Arch/X86_64.cpp` - Changed expr to `R_SECONDARY_GOT_PC` on overflow, skip relaxation for secondary GOT
+- `lld/ELF/InputSection.cpp` - Added `R_SECONDARY_GOT_PC` resolution case
 
 ---
 
@@ -957,8 +991,6 @@ This document outlines a comprehensive approach to extending the x86-64 medium c
 3. **Multiple GOTs**: Handle unlimited code spread for data access through GOT
 4. **Thunks for GOT Calls**: Optimize indirect calls through far GOT entries
 5. **Compiler sdata8 for Medium Code Model**: Exception handling data (LSDA, personality, TType, FDE) now uses 64-bit encodings
-6. **64-bit Jump Tables**: Medium code model uses 64-bit jump table entries to prevent overflow
-7. **Constant Pool GOTOFF**: Medium code model with `LargeDataThreshold=0` uses GOTOFF for constant pools, eliminating RIP-relative overflow
 
 With these techniques, the medium code model can theoretically support binaries of arbitrary size, limited only by the x86-64 virtual address space (128 TiB on most systems).
 
