@@ -7,7 +7,7 @@
 
 # RUN: split-file %s %t
 # RUN: llvm-mc -filetype=obj -triple=x86_64-unknown-linux %t/main.s -o %t/main.o
-# RUN: not ld.lld %t/main.o -T %t/script.lds -o /dev/null 2>&1 | FileCheck %s
+# RUN: not ld.lld --no-relax %t/main.o -T %t/script.lds -o /dev/null 2>&1 | FileCheck %s
 
 # CHECK: error: {{.*}}main.o:(.text+{{.*}}): relocation R_X86_64_REX_GOTPCRELX out of range
 

@@ -13,10 +13,10 @@
 // such as MIPS PIC and non-PIC or ARM non-Thumb and Thumb functions.
 //
 // If a jump target is too far and its address doesn't fit to a
-// short jump instruction, we need to create a thunk too, but we
-// haven't supported it yet.
+// short jump instruction, we need to create a thunk too.
 //
-// i386 and x86-64 don't need thunks.
+// For x86-64, thunks are needed when the .text section exceeds 2GiB
+// and RIP-relative branches (R_X86_64_PLT32, R_X86_64_PC32) overflow.
 //
 //===---------------------------------------------------------------------===//
 
@@ -611,6 +611,27 @@ public:
       : PPC64LongBranchThunk(ctx, dest, addend) {
     ctx.in.ppc64LongBranchTarget->addEntry(&dest, addend);
   }
+};
+
+// X86-64 long branch thunk.
+//
+// When .text exceeds 2GiB, RIP-relative branches (R_X86_64_PLT32, R_X86_64_PC32)
+// can overflow their 32-bit displacement. This thunk provides a long-range
+// jump using an absolute 64-bit address.
+//
+// The thunk uses:
+//   movabs $target, %r11  # 49 BB xx xx xx xx xx xx xx xx (10 bytes)
+//   jmp *%r11             # 41 FF E3 (3 bytes)
+//
+// Total size: 13 bytes. Using r11 as it's a caller-saved register that
+// is not used for parameter passing in the SysV ABI.
+class X86_64LongBranchThunk final : public Thunk {
+public:
+  X86_64LongBranchThunk(Ctx &ctx, Symbol &dest, int64_t addend)
+      : Thunk(ctx, dest, addend) {}
+  uint32_t size() override { return 13; }
+  void writeTo(uint8_t *buf) override;
+  void addSymbols(ThunkSection &isec) override;
 };
 
 } // end anonymous namespace
@@ -1234,6 +1255,36 @@ void ThumbV4PILongThunk::addLongMapSyms() {
   addSymbol("$d", STT_NOTYPE, 16, *tsec);
 }
 
+// X86-64 long branch thunk implementation.
+// Uses movabs + jmp sequence to reach any 64-bit address.
+void X86_64LongBranchThunk::writeTo(uint8_t *buf) {
+  // movabs $imm64, %r11  ; 49 BB xx xx xx xx xx xx xx xx
+  buf[0] = 0x49; // REX.WB prefix (W=1 for 64-bit, B=1 for r11)
+  buf[1] = 0xbb; // mov r11, imm64
+
+  // Get the target address. For thunks, we want the actual symbol address,
+  // not adjusted by the relocation's addend (which is typically -4 for
+  // PC-relative calls and is used for a different purpose).
+  uint64_t target;
+  if (destination.isInPlt(ctx))
+    target = destination.getPltVA(ctx);
+  else
+    target = destination.getVA(ctx, 0);
+
+  // Write the 64-bit immediate using relocateNoSym
+  ctx.target->relocateNoSym(buf + 2, R_X86_64_64, target);
+
+  // jmp *%r11  ; 41 FF E3
+  buf[10] = 0x41; // REX.B prefix
+  buf[11] = 0xff; // jmp r/m64
+  buf[12] = 0xe3; // ModRM: mod=11, reg=4 (jmp), rm=3 (r11)
+}
+
+void X86_64LongBranchThunk::addSymbols(ThunkSection &isec) {
+  addSymbol(ctx.saver.save("__x86_64_thunk_" + destination.getName()),
+            STT_FUNC, 0, isec);
+}
+
 // Use the long jump which covers a range up to 8MiB.
 void AVRThunk::writeTo(uint8_t *buf) {
   write32(ctx, buf, 0x940c); // jmp func
@@ -1810,6 +1861,17 @@ static std::unique_ptr<Thunk> addThunkPPC64(Ctx &ctx, RelType type, Symbol &s,
   return std::make_unique<PPC64PDLongBranchThunk>(ctx, s, a);
 }
 
+static std::unique_ptr<Thunk> addThunkX86_64(Ctx &ctx, const InputSection &isec,
+                                             RelType type, Symbol &s,
+                                             int64_t a) {
+  // For x86-64, thunks are needed when calls/jumps exceed the 2GiB range
+  // of RIP-relative addressing. We use an indirect jump through GOT.
+  assert((type == R_X86_64_PLT32 || type == R_X86_64_PC32 ||
+          type == R_X86_64_GOTPCRELX || type == R_X86_64_REX_GOTPCRELX) &&
+         "unexpected relocation type for x86-64 thunk");
+  return std::make_unique<X86_64LongBranchThunk>(ctx, s, a);
+}
+
 std::unique_ptr<Thunk> elf::addThunk(Ctx &ctx, const InputSection &isec,
                                      Relocation &rel) {
   Symbol &s = *rel.sym;
@@ -1830,9 +1892,11 @@ std::unique_ptr<Thunk> elf::addThunk(Ctx &ctx, const InputSection &isec,
     return addThunkPPC64(ctx, rel.type, s, a);
   case EM_HEXAGON:
     return addThunkHexagon(ctx, isec, rel, s);
+  case EM_X86_64:
+    return addThunkX86_64(ctx, isec, rel.type, s, a);
   default:
     llvm_unreachable(
-        "add Thunk only supported for ARM, AVR, Hexagon, Mips and PowerPC");
+        "add Thunk only supported for ARM, AVR, Hexagon, Mips, PowerPC, and x86-64");
   }
 }
 
