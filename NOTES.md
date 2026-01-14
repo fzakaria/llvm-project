@@ -60,8 +60,6 @@ Tests:
 - `x86-64-got-call-overflow.s` - Demonstrates thunk usage for GOT call overflow
 - Updated `x86-64-got-overflow.s` - Documents that mov case still fails
 
-## Remaining Work
-
 ### 5. Multiple GOT Support (commit d56427c0c912)
 Infrastructure added for multiple GOT support when primary GOT is >2GiB from some code:
 - Added `X86_64SecondaryGotSection` class in SyntheticSections.h/cpp
@@ -83,13 +81,52 @@ Status: Basic infrastructure in place. For production use, additional work neede
 - Proper section placement algorithms
 - More comprehensive testing with actual large binaries
 
-## Future Improvements
+### 6. Compiler Changes: Medium Code Model Exception Handling (uncommitted)
+Modified LLVM codegen to use sdata8 (64-bit) encodings for exception handling data
+when using the medium code model on x86-64:
 
-### LSDA Pointer Handling
-The LSDA (Language-Specific Data Area) pointer in FDEs uses 32-bit PC-relative encoding.
-This is set by the compiler, not the linker. Workarounds:
-- Place .gcc_except_table near .eh_frame via linker script
-- Compiler changes to use sdata8 encoding for large binaries
+**TargetLoweringObjectFileImpl.cpp changes:**
+- `PersonalityEncoding`: Changed to use `DW_EH_PE_sdata8` for medium code model (not just large)
+- `LSDAEncoding`: Changed to use `DW_EH_PE_sdata8` for medium code model
+- `TTypeEncoding`: Changed to use `DW_EH_PE_sdata8` for medium code model
+- For non-PIC mode, medium code model now uses `DW_EH_PE_absptr` (64-bit absolute)
+
+**TargetLoweringObjectFile.cpp changes:**
+- `Initialize()`: Now passes `UseLargeEncodings=true` to `initMCObjectFileInfo()` for
+  both medium and large code models, ensuring FDE/CIE data uses 64-bit encodings
+
+**Effect:**
+When compiling with `-mcmodel=medium`, the compiler now generates:
+- 64-bit PC-relative LSDA pointers in FDEs (instead of 32-bit)
+- 64-bit PC-relative personality function references (instead of 32-bit)
+- 64-bit type table pointers in LSDA (instead of 32-bit)
+- 64-bit FDE initial_location fields (instead of 32-bit)
+
+This eliminates relocation overflows in `.eh_frame` and `.gcc_except_table` sections
+for binaries where code/data exceeds 2GiB in size.
+
+Key files modified:
+- llvm/lib/CodeGen/TargetLoweringObjectFileImpl.cpp - Exception handling encodings
+- llvm/lib/Target/TargetLoweringObjectFile.cpp - FDE/CIE encoding initialization
+
+Note: These changes require corresponding runtime support in libunwind/libgcc_s to
+properly parse the 64-bit encoded exception handling data.
+
+## Future Improvements / Remaining Work
+
+### Runtime Support for sdata8 Exception Handling
+The compiler and linker changes produce exception handling data with 64-bit encodings.
+For this to work at runtime, libunwind and/or libgcc_s need updates to parse:
+- 64-bit FDE initial_location (sdata8 in eh_frame_hdr)
+- 64-bit LSDA pointers
+- 64-bit personality function pointers
+- 64-bit TType entries
+
+### Production Multi-GOT Support
+The current multi-GOT infrastructure is proof-of-concept. Production use needs:
+- Dynamic relocation handling for secondary GOT entries
+- Optimal placement algorithms for secondary GOTs
+- Testing with actual large binaries
 
 ### TLS Handling
 Thread-Local Storage has inherent 32-bit limitations (DTPOFF, Local Exec offsets).

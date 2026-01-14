@@ -42,8 +42,11 @@ void TargetLoweringObjectFile::Initialize(MCContext &ctx,
   // `Initialize` can be called more than once.
   delete Mang;
   Mang = new Mangler();
-  initMCObjectFileInfo(ctx, TM.isPositionIndependent(),
-                       TM.getCodeModel() == CodeModel::Large);
+  // For medium and large code models, use 64-bit encodings for FDE/CIE data
+  // since code/data may span more than 2GiB.
+  CodeModel::Model CM = TM.getCodeModel();
+  bool UseLargeEncodings = (CM == CodeModel::Medium || CM == CodeModel::Large);
+  initMCObjectFileInfo(ctx, TM.isPositionIndependent(), UseLargeEncodings);
 
   // Reset various EH DWARF encodings.
   PersonalityEncoding = LSDAEncoding = TTypeEncoding = dwarf::DW_EH_PE_absptr;

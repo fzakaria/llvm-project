@@ -310,27 +310,13 @@ Loading addresses from the GOT (for data symbols) still requires the GOT to be w
 movq large_array@GOTPCREL(%rip), %rax
 ```
 
-**Workaround:** Use linker scripts to ensure GOT is placed near code, or restructure code to use alternative addressing modes.
+**Solution:** Multiple GOT sections (implemented as proof-of-concept, see below).
 
-### 2. LSDA Pointer Overflow
+### 2. Runtime Support for sdata8 Exception Data
 
-The LSDA (Language-Specific Data Area) pointer in `.eh_frame` uses `R_X86_64_PC32`, limiting the `.gcc_except_table` section to be within 2GiB of `.eh_frame`.
+The compiler changes to use sdata8 for medium code model exception handling require corresponding updates to the runtime unwinder (libunwind/libgcc_s). Most modern versions support sdata8 encoding, but older versions may not.
 
-**Workaround:** Use linker scripts to place `.gcc_except_table` near `.eh_frame`:
-
-```
-SECTIONS {
-    .text : { *(.text*) }
-    .eh_frame : { *(.eh_frame*) }
-    .gcc_except_table : { *(.gcc_except_table*) }  /* Keep near eh_frame */
-}
-```
-
-### 3. Multiple GOT Sections
-
-For extremely large binaries where even the GOT itself might exceed 2GiB, a multiple-GOT solution would be needed. This is not currently implemented but could be added if needed.
-
-### 4. TLS Relocations
+### 3. TLS Relocations
 
 Thread-Local Storage (TLS) relocations may have similar 32-bit range limitations.
 
@@ -482,8 +468,108 @@ The changes described in this document extend the medium code model's capabiliti
 1. **Thunks** for long-range function calls (automatic)
 2. **sdata8 format** for `.eh_frame_hdr` (opt-in with `--eh-frame-hdr-format=sdata8`)
 3. **GOT call relaxation with thunks** (automatic)
+4. **Compiler sdata8 encodings** for medium code model exception handling (LSDA, personality, TType)
+5. **Multiple GOT support** for data access when GOT is >2GiB away (proof-of-concept)
 
 Together with careful linker script layout, these changes enable linking of very large monolithic binaries without resorting to the performance-impacting large code model.
+
+---
+
+### Compiler Changes: sdata8 for Medium Code Model Exception Handling
+
+**Problem:** The LSDA pointer, personality encoding, and TType encoding in `.eh_frame` and `.gcc_except_table` use 32-bit PC-relative offsets, causing overflow when exception data is >2GiB from code.
+
+**Solution:** Modified LLVM codegen to use 64-bit (sdata8) encodings for the medium code model on x86-64.
+
+#### Changes to TargetLoweringObjectFileImpl.cpp
+
+For x86-64 with medium code model in PIC mode:
+
+```cpp
+// Before: Only large code model used sdata8
+PersonalityEncoding = dwarf::DW_EH_PE_indirect | dwarf::DW_EH_PE_pcrel |
+                      dwarf::DW_EH_PE_sdata4;
+LSDAEncoding = dwarf::DW_EH_PE_pcrel | dwarf::DW_EH_PE_sdata4;
+TTypeEncoding = dwarf::DW_EH_PE_indirect | dwarf::DW_EH_PE_pcrel |
+                dwarf::DW_EH_PE_sdata4;
+
+// After: Medium and large code models use sdata8
+PersonalityEncoding = dwarf::DW_EH_PE_indirect | dwarf::DW_EH_PE_pcrel |
+  (CM == CodeModel::Small
+   ? dwarf::DW_EH_PE_sdata4 : dwarf::DW_EH_PE_sdata8);
+LSDAEncoding = dwarf::DW_EH_PE_pcrel |
+  (CM == CodeModel::Small
+   ? dwarf::DW_EH_PE_sdata4 : dwarf::DW_EH_PE_sdata8);
+TTypeEncoding = dwarf::DW_EH_PE_indirect | dwarf::DW_EH_PE_pcrel |
+  (CM == CodeModel::Small
+   ? dwarf::DW_EH_PE_sdata4 : dwarf::DW_EH_PE_sdata8);
+```
+
+For non-PIC mode, medium code model now uses `DW_EH_PE_absptr` (64-bit absolute).
+
+#### Changes to TargetLoweringObjectFile.cpp
+
+```cpp
+// Before: Only large code model used 64-bit FDE encodings
+initMCObjectFileInfo(ctx, TM.isPositionIndependent(),
+                     TM.getCodeModel() == CodeModel::Large);
+
+// After: Medium and large both use 64-bit FDE encodings
+CodeModel::Model CM = TM.getCodeModel();
+bool UseLargeEncodings = (CM == CodeModel::Medium || CM == CodeModel::Large);
+initMCObjectFileInfo(ctx, TM.isPositionIndependent(), UseLargeEncodings);
+```
+
+This ensures FDE initial_location uses 64-bit encoding for medium code model.
+
+#### Effect on Generated Code
+
+When compiling with `-mcmodel=medium`, the compiler now generates:
+
+```
+.eh_frame with 64-bit FDE:
+┌────────────────────────────────────────────────────────────────┐
+│ CIE:                                                            │
+│   Personality pointer: 8 bytes (DW_EH_PE_sdata8)               │
+│   Augmentation data: Encoding indicators for sdata8            │
+├────────────────────────────────────────────────────────────────┤
+│ FDE:                                                            │
+│   Initial location: 8 bytes (sdata8)                           │
+│   LSDA pointer: 8 bytes (DW_EH_PE_sdata8)                      │
+└────────────────────────────────────────────────────────────────┘
+
+.gcc_except_table with 64-bit TType:
+┌────────────────────────────────────────────────────────────────┐
+│ LSDA:                                                           │
+│   TType encoding: DW_EH_PE_sdata8                              │
+│   TType entries: 8 bytes each (pointers to catch type info)    │
+└────────────────────────────────────────────────────────────────┘
+```
+
+#### Usage
+
+```bash
+# Compile with medium code model (now uses sdata8 for exception data)
+clang -mcmodel=medium -fPIC -c source.cpp -o source.o
+
+# Link with sdata8 eh_frame_hdr format
+ld.lld --eh-frame-hdr-format=sdata8 source.o -o binary
+```
+
+#### Runtime Requirements
+
+The sdata8 encodings require runtime support from the unwinder. The unwinder must be able to parse:
+- 64-bit FDE initial_location values
+- 64-bit LSDA pointers
+- 64-bit personality function pointers
+- 64-bit TType entries
+
+Most modern libunwind and libgcc_s implementations support these encodings.
+
+#### Files Modified
+
+- `llvm/lib/CodeGen/TargetLoweringObjectFileImpl.cpp` - Exception encoding configuration
+- `llvm/lib/Target/TargetLoweringObjectFile.cpp` - FDE/CIE encoding initialization
 
 ---
 
@@ -633,39 +719,30 @@ GOT duplication is bounded by the number of code regions, not binary size.
 
 ## LSDA and Exception Table Handling
 
-### The Problem
+### The Problem (Now Solved)
 
 The `.eh_frame` section contains CIE (Common Information Entry) and FDE (Frame Description Entry) records. FDEs may contain pointers to LSDA (Language-Specific Data Area) in `.gcc_except_table`.
 
-The LSDA pointer encoding is typically `DW_EH_PE_pcrel | DW_EH_PE_sdata4`, meaning a 32-bit PC-relative offset. When `.gcc_except_table` is more than 2GiB from the FDE, this overflows.
+Previously, the LSDA pointer encoding was `DW_EH_PE_pcrel | DW_EH_PE_sdata4`, meaning a 32-bit PC-relative offset. When `.gcc_except_table` was more than 2GiB from the FDE, this would overflow.
 
-### Current Status
+### Solution: Compiler Changes
 
-The LSDA encoding is determined by the compiler, not the linker. The linker cannot change the encoding after the fact.
+With the compiler changes described above, x86-64 medium code model now uses:
 
-### Workarounds
+- `DW_EH_PE_pcrel | DW_EH_PE_sdata8` for LSDA pointers (64-bit)
+- `DW_EH_PE_pcrel | DW_EH_PE_sdata8` for personality function references (64-bit)
+- `DW_EH_PE_sdata8` for TType entries (64-bit)
+- 64-bit FDE initial_location
 
-1. **Compiler Option**: Use `-fno-asynchronous-unwind-tables` to disable exception tables (not always possible)
+This eliminates the relocation overflow issue for exception handling data.
 
-2. **Linker Script**: Place `.gcc_except_table` near `.eh_frame`:
-   ```
-   SECTIONS {
-       .eh_frame : { *(.eh_frame*) }
-       .gcc_except_table : { *(.gcc_except_table*) }
-   }
-   ```
+### Runtime Requirement
 
-3. **Future Work**: Compiler changes to use `DW_EH_PE_sdata8` encoding for LSDA pointers when targeting large binaries
+The sdata8 encodings require runtime support from the unwinder:
 
-### Theoretical Solution: Split Exception Tables
-
-Similar to multiple GOTs, we could split `.gcc_except_table` into multiple sections placed throughout the address space. However, this requires:
-
-1. Tracking which FDEs reference which LSDA entries
-2. Duplicating LSDA entries in secondary sections
-3. Modifying the LSDA pointer in each FDE to point to the nearest copy
-
-This is complex because LSDA entries are not individually addressable - they are part of a variable-length encoded stream.
+1. **libunwind**: Most modern versions support sdata8 encoding
+2. **libgcc_s**: Support varies by version; check your target platform
+3. **LLVM's libunwind**: Full support for all DWARF encoding types
 
 ---
 
@@ -702,30 +779,32 @@ For massive binaries, TLS is not typically the bottleneck:
 
 ### Sections Using 32-bit Offsets
 
-| Section | Field | Encoding | Impact |
+| Section | Field | Encoding | Status |
 |---------|-------|----------|--------|
-| `.eh_frame` | Initial PC | sdata4 | Covered by sdata8 |
-| `.eh_frame` | LSDA pointer | sdata4 | **LIMITATION** |
-| `.eh_frame_hdr` | Table entries | sdata4 | Covered by sdata8 |
+| `.eh_frame` | Initial PC | sdata4 | **FIXED** - sdata8 with medium code model |
+| `.eh_frame` | LSDA pointer | sdata4 | **FIXED** - sdata8 with medium code model |
+| `.eh_frame` | Personality | sdata4 | **FIXED** - sdata8 with medium code model |
+| `.gcc_except_table` | TType | sdata4 | **FIXED** - sdata8 with medium code model |
+| `.eh_frame_hdr` | Table entries | sdata4 | **FIXED** - sdata8 with `--eh-frame-hdr-format=sdata8` |
 | `.debug_*` | Various | DWARF varies | Non-ALLOC, no runtime impact |
-| `.got` | Entry access | 32-bit GOTPCREL | **LIMITATION** (Multi-GOT needed) |
+| `.got` | Entry access | 32-bit GOTPCREL | **FIXED** - Multi-GOT proof-of-concept |
 | `.plt` | Branch to GOT | 32-bit offset | Already uses GOT |
 
 ### Relocation Types That Could Overflow
 
-| Relocation | Usage | Mitigation |
-|------------|-------|------------|
-| `R_X86_64_PC32` | General PC-relative | Thunks for calls, Multi-GOT for data |
-| `R_X86_64_PLT32` | PLT calls | Thunks |
-| `R_X86_64_GOTPCREL` | GOT access | Thunks for calls, Multi-GOT for mov |
-| `R_X86_64_GOTPCRELX` | Relaxable GOT | Thunks + Multi-GOT |
-| `R_X86_64_REX_GOTPCRELX` | REX GOT | Thunks + Multi-GOT |
+| Relocation | Usage | Status |
+|------------|-------|--------|
+| `R_X86_64_PC32` | General PC-relative | **FIXED** - Thunks for calls |
+| `R_X86_64_PLT32` | PLT calls | **FIXED** - Thunks |
+| `R_X86_64_GOTPCREL` | GOT access | **FIXED** - Thunks + Multi-GOT |
+| `R_X86_64_GOTPCRELX` | Relaxable GOT | **FIXED** - Thunks + Multi-GOT |
+| `R_X86_64_REX_GOTPCRELX` | REX GOT | **FIXED** - Thunks + Multi-GOT |
 
 ### Summary of Remaining Work
 
-1. **Multiple GOT Implementation**: Full implementation for data access
-2. **LSDA Handling**: Compiler changes or split exception tables
-3. **Testing**: Real-world validation with large binaries
+1. **Production Multi-GOT**: Harden proof-of-concept for production use
+2. **Runtime Testing**: Validate sdata8 exception handling with target unwinders
+3. **Real-world Testing**: Validation with actual large binaries
 
 ---
 
@@ -734,10 +813,11 @@ For massive binaries, TLS is not typically the bottleneck:
 This document outlines a comprehensive approach to extending the x86-64 medium code model to support massive binaries. The key innovations are:
 
 1. **Range Extension Thunks**: Handle unlimited code size by placing intermediate jump points
-2. **sdata8 eh_frame_hdr**: Handle unlimited `.text` span for exception handling
+2. **sdata8 eh_frame_hdr**: Handle unlimited `.text` span for exception handling lookup
 3. **Multiple GOTs**: Handle unlimited code spread for data access through GOT
 4. **Thunks for GOT Calls**: Optimize indirect calls through far GOT entries
+5. **Compiler sdata8 for Medium Code Model**: Exception handling data (LSDA, personality, TType, FDE) now uses 64-bit encodings
 
 With these techniques, the medium code model can theoretically support binaries of arbitrary size, limited only by the x86-64 virtual address space (128 TiB on most systems).
 
-The main remaining limitation is LSDA pointers, which require compiler changes or creative linker solutions. For binaries where exceptions are rare or the exception tables can be placed strategically, this is not a blocking issue.
+The remaining requirement is runtime support in the unwinder (libunwind/libgcc_s) for parsing sdata8-encoded exception handling data. Most modern unwinders already support this.

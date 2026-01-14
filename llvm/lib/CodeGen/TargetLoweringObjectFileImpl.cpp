@@ -152,18 +152,21 @@ void TargetLoweringObjectFileELF::Initialize(MCContext &Ctx,
     break;
   case Triple::x86_64:
     if (isPositionIndependent()) {
+      // For medium and large code models, use sdata8 to support binaries
+      // where .text may exceed 2GiB.
       PersonalityEncoding = dwarf::DW_EH_PE_indirect | dwarf::DW_EH_PE_pcrel |
-        ((CM == CodeModel::Small || CM == CodeModel::Medium)
+        (CM == CodeModel::Small
          ? dwarf::DW_EH_PE_sdata4 : dwarf::DW_EH_PE_sdata8);
       LSDAEncoding = dwarf::DW_EH_PE_pcrel |
         (CM == CodeModel::Small
          ? dwarf::DW_EH_PE_sdata4 : dwarf::DW_EH_PE_sdata8);
       TTypeEncoding = dwarf::DW_EH_PE_indirect | dwarf::DW_EH_PE_pcrel |
-        ((CM == CodeModel::Small || CM == CodeModel::Medium)
+        (CM == CodeModel::Small
          ? dwarf::DW_EH_PE_sdata4 : dwarf::DW_EH_PE_sdata8);
     } else {
+      // For non-PIC, medium and large use absptr (64-bit) for exception data.
       PersonalityEncoding =
-        (CM == CodeModel::Small || CM == CodeModel::Medium)
+        (CM == CodeModel::Small)
         ? dwarf::DW_EH_PE_udata4 : dwarf::DW_EH_PE_absptr;
       LSDAEncoding = (CM == CodeModel::Small)
         ? dwarf::DW_EH_PE_udata4 : dwarf::DW_EH_PE_absptr;
