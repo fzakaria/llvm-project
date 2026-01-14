@@ -1,0 +1,80 @@
+# REQUIRES: x86, clang
+# End-to-end test: Multiple object files with cross-module calls
+#
+# This test simulates a large binary with multiple translation units
+# where function calls must cross >2GiB boundaries.
+
+# RUN: rm -rf %t && split-file %s %t
+
+# Compile all modules with medium code model
+# RUN: %clang -mcmodel=medium -fPIC -fno-exceptions -c %t/module_a.c -o %t/module_a.o
+# RUN: %clang -mcmodel=medium -fPIC -fno-exceptions -c %t/module_b.c -o %t/module_b.o
+# RUN: %clang -mcmodel=medium -fPIC -fno-exceptions -c %t/module_c.c -o %t/module_c.o
+# RUN: %clang -mcmodel=medium -fPIC -fno-exceptions -c %t/main.c -o %t/main.o
+
+# Link with linker script that spreads modules across address space
+# RUN: ld.lld %t/main.o %t/module_a.o %t/module_b.o %t/module_c.o \
+# RUN:        -T %t/layout.lds -o %t/output
+
+# Verify thunks were created for cross-module calls
+# RUN: llvm-objdump -d %t/output | FileCheck %s --check-prefix=THUNKS
+
+# THUNKS: __x86_64_thunk_function_a
+# THUNKS: __x86_64_thunk_function_a2
+
+# Verify no relocation overflows occurred (link succeeded)
+# RUN: llvm-readelf -h %t/output | FileCheck %s --check-prefix=HEADER
+
+# HEADER: ELF64
+
+#--- module_a.c
+int function_a(int x) {
+    return x + 1;
+}
+
+int function_a2(int x) {
+    return x * 2;
+}
+
+#--- module_b.c
+extern int function_a(int x);
+
+int function_b(int x) {
+    return function_a(x) + 100;
+}
+
+#--- module_c.c
+extern int function_b(int x);
+extern int function_a2(int x);
+
+int function_c(int x) {
+    return function_b(x) + function_a2(x);
+}
+
+#--- main.c
+extern int function_c(int x);
+
+int _start(void) {
+    return function_c(10);
+}
+
+#--- layout.lds
+SECTIONS {
+    . = 0x200000;
+    .text.main : { *main.o(.text*) }
+
+    /* Spread modules across >2GiB address range */
+    . = 0x40200000;
+    .text.a : { *module_a.o(.text*) }
+
+    . = 0x80200000;
+    .text.b : { *module_b.o(.text*) }
+
+    . = 0xC0200000;
+    .text.c : { *module_c.o(.text*) }
+
+    .rodata : { *(.rodata*) }
+    .data : { *(.data*) }
+    .bss : { *(.bss*) }
+    .got : { *(.got*) }
+}

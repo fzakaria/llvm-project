@@ -112,6 +112,36 @@ Key files modified:
 Note: These changes require corresponding runtime support in libunwind/libgcc_s to
 properly parse the 64-bit encoded exception handling data.
 
+### 7. Jump Table 64-bit Encoding for Medium Code Model (uncommitted)
+Modified the compiler to use 64-bit jump table entries for medium code model:
+
+**X86ISelLoweringCall.cpp changes:**
+- `getJumpTableEncoding()` now returns `EK_LabelDifference64` for medium code model
+  (previously only for large code model)
+- Jump table entries now use R_X86_64_PC64 instead of R_X86_64_PC32
+
+**Effect:**
+When compiling switch statements with `-mcmodel=medium`, the jump table entries
+use 64-bit PC-relative offsets. This prevents overflow when .rodata (containing
+the jump table) is more than 2GiB from .text.
+
+Key file modified:
+- llvm/lib/Target/X86/X86ISelLoweringCall.cpp
+
+Note: The jump table base address load still uses 32-bit PC-relative addressing
+(`leaq table(%rip), %rax`). For extremely large binaries where both .text AND
+.rodata exceed 2GiB, use `-fno-jump-tables` as a workaround.
+
+### 8. End-to-End Integration Tests (uncommitted)
+Added end-to-end tests that compile C/C++ code with clang and link with lld:
+
+- `e2e-medium-mcmodel-basic.test` - Tests thunks with multiple object files
+- `e2e-medium-mcmodel-exceptions.test` - Tests 64-bit exception handling encodings
+- `e2e-multiple-objects.test` - Tests thunks across multiple translation units
+- `e2e-jump-tables.test` - Tests 64-bit jump table entries
+
+Test location: `lld/test/ELF/large-mcmodel/Integration/`
+
 ## Future Improvements / Remaining Work
 
 ### Runtime Support for sdata8 Exception Handling

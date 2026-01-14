@@ -1,0 +1,55 @@
+# REQUIRES: x86, clang
+# End-to-end test: Exception handling with medium code model
+#
+# This test verifies that exception handling works with medium code model.
+# The compiler changes ensure LSDA, personality, and FDE use 64-bit encodings.
+
+# RUN: rm -rf %t && split-file %s %t
+
+# Compile with medium code model
+# RUN: %clangxx -mcmodel=medium -fPIC -c %t/exceptions.cpp -o %t/exceptions.o
+
+# Verify the object file uses 64-bit exception handling encodings
+# RUN: llvm-readelf -r %t/exceptions.o | FileCheck %s --check-prefix=EH-RELOCS
+
+# With medium code model, FDE should use R_X86_64_PC64
+# EH-RELOCS: .rela.eh_frame
+# EH-RELOCS: R_X86_64_PC64
+
+# Link with sdata8 eh_frame_hdr format (allow unresolved symbols for testing)
+# RUN: ld.lld --eh-frame-hdr --eh-frame-hdr-format=sdata8 --unresolved-symbols=ignore-all \
+# RUN:        %t/exceptions.o -o %t/output
+
+# Verify eh_frame_hdr was created
+# RUN: llvm-readelf -S %t/output | FileCheck %s --check-prefix=SECTIONS
+
+# SECTIONS: .eh_frame_hdr
+# SECTIONS: .eh_frame
+
+#--- exceptions.cpp
+class MyException {
+public:
+    int code;
+    MyException(int c) : code(c) {}
+};
+
+int thrower(int x) {
+    if (x < 0) {
+        throw MyException(-1);
+    }
+    return x * 2;
+}
+
+int catcher(int x) {
+    try {
+        return thrower(x);
+    } catch (const MyException& e) {
+        return e.code;
+    }
+}
+
+extern "C" int _start() {
+    int result = catcher(10);
+    result += catcher(-5);
+    return result;
+}

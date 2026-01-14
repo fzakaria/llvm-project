@@ -1,0 +1,69 @@
+# REQUIRES: x86, clang
+# End-to-end test: Basic medium code model support for large binaries
+#
+# This test verifies that the LLVM toolchain (clang + lld) can compile and link
+# code with the medium code model when sections are placed far apart (>2GiB).
+#
+# Features tested:
+# - Function calls across >2GiB distance (thunks)
+# - GOT access
+
+# RUN: rm -rf %t && split-file %s %t
+
+# Compile with medium code model
+# RUN: %clang -mcmodel=medium -fPIC -fno-exceptions -c %t/main.c -o %t/main.o
+# RUN: %clang -mcmodel=medium -fPIC -fno-exceptions -c %t/far.c -o %t/far.o
+
+# Link with linker script that places sections >2GiB apart
+# RUN: ld.lld %t/main.o %t/far.o -T %t/layout.lds -o %t/output
+
+# Verify thunks were created
+# RUN: llvm-objdump -d %t/output | FileCheck %s --check-prefix=THUNK
+
+# THUNK: __x86_64_thunk_far_function
+# THUNK: movabs
+# THUNK: jmpq
+
+# Verify the binary has expected sections
+# RUN: llvm-readelf -S %t/output | FileCheck %s --check-prefix=SECTIONS
+
+# SECTIONS: .text.main
+# SECTIONS: .text.far
+
+#--- main.c
+// External functions defined in other translation units
+extern int far_function(int x);
+extern int get_data(void);
+
+int _start(void) {
+    int result = 0;
+    result += far_function(42);
+    result += get_data();
+    return result;
+}
+
+#--- far.c
+// This file will be placed far (>2GiB) from main.c
+static int data = 100;
+
+int far_function(int x) {
+    return x + data;
+}
+
+int get_data(void) {
+    return data;
+}
+
+#--- layout.lds
+SECTIONS {
+    . = 0x200000;
+    .text.main : { *main.o(.text*) }
+    /* Place far.o text more than 2GiB away */
+    . = 0x200000 + 0x80000100;
+    .text.far : { *far.o(.text*) }
+    .rodata : { *(.rodata*) }
+    .data : { *(.data*) }
+    .bss : { *(.bss*) }
+    .got : { *(.got*) }
+    .got.plt : { *(.got.plt*) }
+}

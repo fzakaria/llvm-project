@@ -1,0 +1,53 @@
+# REQUIRES: x86, clang
+# End-to-end test: Jump tables with medium code model
+#
+# This test verifies that switch statements generate 64-bit jump table
+# entries when using medium code model, preventing overflow when code
+# and rodata are far apart.
+
+# RUN: rm -rf %t && split-file %s %t
+
+# Compile with medium code model
+# RUN: %clang -mcmodel=medium -fPIC -c %t/switch.c -o %t/switch.o
+
+# Verify the jump table uses 64-bit relocations
+# RUN: llvm-readelf -r %t/switch.o | FileCheck %s --check-prefix=RELOCS
+
+# Jump table entries should use R_X86_64_PC64 (not PC32)
+# RELOCS: .rela.rodata
+# RELOCS: R_X86_64_PC64
+
+# Link the binary
+# RUN: ld.lld %t/switch.o -o %t/output
+
+# Verify the binary was created successfully
+# RUN: llvm-readelf -h %t/output | FileCheck %s --check-prefix=HEADER
+
+# HEADER: ELF64
+
+#--- switch.c
+// Large switch statement that will generate a jump table
+int classify(int x) {
+    switch(x) {
+        case 0: return 100;
+        case 1: return 101;
+        case 2: return 102;
+        case 3: return 103;
+        case 4: return 104;
+        case 5: return 105;
+        case 6: return 106;
+        case 7: return 107;
+        case 8: return 108;
+        case 9: return 109;
+        default: return -1;
+    }
+}
+
+int _start(void) {
+    int sum = 0;
+    for (int i = 0; i < 10; i++) {
+        sum += classify(i);
+    }
+    return sum;
+}
+

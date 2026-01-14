@@ -470,6 +470,7 @@ The changes described in this document extend the medium code model's capabiliti
 3. **GOT call relaxation with thunks** (automatic)
 4. **Compiler sdata8 encodings** for medium code model exception handling (LSDA, personality, TType)
 5. **Multiple GOT support** for data access when GOT is >2GiB away (proof-of-concept)
+6. **64-bit jump tables** for medium code model to prevent overflow in switch statements
 
 Together with careful linker script layout, these changes enable linking of very large monolithic binaries without resorting to the performance-impacting large code model.
 
@@ -570,6 +571,59 @@ Most modern libunwind and libgcc_s implementations support these encodings.
 
 - `llvm/lib/CodeGen/TargetLoweringObjectFileImpl.cpp` - Exception encoding configuration
 - `llvm/lib/Target/TargetLoweringObjectFile.cpp` - FDE/CIE encoding initialization
+
+---
+
+### Compiler Changes: 64-bit Jump Tables for Medium Code Model
+
+**Problem:** Switch statements generate jump tables in `.rodata` with 32-bit PC-relative entries (`R_X86_64_PC32`). If `.rodata` is more than 2GiB from `.text`, these entries overflow.
+
+**Solution:** Modified `X86TargetLowering::getJumpTableEncoding()` to use `EK_LabelDifference64` for medium code model.
+
+#### Changes to X86ISelLoweringCall.cpp
+
+```cpp
+// Before: Only large code model used 64-bit jump table entries
+if (isPositionIndependent() &&
+    getTargetMachine().getCodeModel() == CodeModel::Large &&
+    !Subtarget.isTargetCOFF())
+  return MachineJumpTableInfo::EK_LabelDifference64;
+
+// After: Medium and large code models use 64-bit entries
+CodeModel::Model CM = getTargetMachine().getCodeModel();
+if (isPositionIndependent() &&
+    (CM == CodeModel::Medium || CM == CodeModel::Large) &&
+    !Subtarget.isTargetCOFF())
+  return MachineJumpTableInfo::EK_LabelDifference64;
+```
+
+#### Effect on Generated Code
+
+Jump table entries now use `R_X86_64_PC64` instead of `R_X86_64_PC32`:
+
+```
+Before (medium code model):
+.rodata:
+  .long .LBB0_1 - .LJTI0_0   # 4 bytes, R_X86_64_PC32
+
+After (medium code model):
+.rodata:
+  .quad .LBB0_1 - .LJTI0_0   # 8 bytes, R_X86_64_PC64
+```
+
+#### Remaining Limitation
+
+The jump table base address load still uses 32-bit PC-relative addressing:
+
+```asm
+leaq .LJTI0_0(%rip), %rax   # R_X86_64_PC32 to .rodata
+```
+
+This means the jump table itself must be within 2GiB of the code that uses it. For extremely large binaries where both `.text` AND `.rodata` exceed 2GiB, use `-fno-jump-tables` as a workaround.
+
+#### Files Modified
+
+- `llvm/lib/Target/X86/X86ISelLoweringCall.cpp` - Jump table encoding selection
 
 ---
 
