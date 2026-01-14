@@ -64,8 +64,8 @@ public:
   size_t numFdes = 0;
 
   struct FdeData {
-    uint32_t pcRel;
-    uint32_t fdeVARel;
+    int64_t pcRel;
+    int64_t fdeVARel;
   };
 
   ArrayRef<CieRecord *> getCieRecords() const { return cieRecords; }

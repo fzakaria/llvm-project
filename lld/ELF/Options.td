@@ -210,6 +210,11 @@ defm eh_frame_hdr: B<"eh-frame-hdr",
     "Request creation of .eh_frame_hdr section and PT_GNU_EH_FRAME segment header",
     "Do not create .eh_frame_hdr section">;
 
+def eh_frame_hdr_format: JJ<"eh-frame-hdr-format=">,
+  HelpText<"Set the .eh_frame_hdr table entry format (default: sdata4)">,
+  MetaVarName<"[sdata4,sdata8]">,
+  Values<"sdata4,sdata8">;
+
 def emit_relocs: F<"emit-relocs">, HelpText<"Generate relocations in output">;
 
 def enable_new_dtags: F<"enable-new-dtags">,

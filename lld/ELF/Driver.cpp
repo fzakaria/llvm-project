@@ -1408,6 +1408,15 @@ static void readConfigs(Ctx &ctx, opt::InputArgList &args) {
   ctx.arg.dynamicLinker = getDynamicLinker(ctx, args);
   ctx.arg.ehFrameHdr =
       args.hasFlag(OPT_eh_frame_hdr, OPT_no_eh_frame_hdr, false);
+  if (auto *arg = args.getLastArg(OPT_eh_frame_hdr_format)) {
+    StringRef s = arg->getValue();
+    if (s == "sdata4")
+      ctx.arg.ehFrameHdrFormat = EhFrameHdrFormat::SData4;
+    else if (s == "sdata8")
+      ctx.arg.ehFrameHdrFormat = EhFrameHdrFormat::SData8;
+    else
+      ErrAlways(ctx) << "unknown --eh-frame-hdr-format: " << s;
+  }
   ctx.arg.emitLLVM = args.hasArg(OPT_lto_emit_llvm);
   ctx.arg.emitRelocs = args.hasArg(OPT_emit_relocs);
   ctx.arg.enableNewDtags =

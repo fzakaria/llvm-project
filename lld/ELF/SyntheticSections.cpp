@@ -608,17 +608,24 @@ void EhFrameSection::writeTo(uint8_t *buf) {
   using FdeData = EhFrameSection::FdeData;
   SmallVector<FdeData, 0> fdes;
   uint64_t va = hdr->getVA();
+  bool useSdata8 = ctx.arg.ehFrameHdrFormat == EhFrameHdrFormat::SData8;
+
   for (CieRecord *rec : cieRecords) {
     uint8_t enc = getFdeEncoding(rec->cie);
     for (EhSectionPiece *fde : rec->fdes) {
       uint64_t pc = getFdePc(buf, fde->outputOff, enc);
       uint64_t fdeVA = getParent()->addr + fde->outputOff;
-      if (!isInt<32>(pc - va)) {
+      int64_t pcRel = pc - va;
+      int64_t fdeVARel = fdeVA - va;
+
+      // For sdata4 format, check that offsets fit in 32 bits
+      if (!useSdata8 && !isInt<32>(pcRel)) {
         Err(ctx) << fde->sec << ": PC offset is too large: 0x"
-                 << Twine::utohexstr(pc - va);
+                 << Twine::utohexstr(pc - va)
+                 << "; consider using --eh-frame-hdr-format=sdata8";
         continue;
       }
-      fdes.push_back({uint32_t(pc - va), uint32_t(fdeVA - va)});
+      fdes.push_back({pcRel, fdeVARel});
     }
   }
 
@@ -634,34 +641,57 @@ void EhFrameSection::writeTo(uint8_t *buf) {
 
   // Write header.
   uint8_t *hdrBuf = ctx.bufferStart + hdr->getParent()->offset + hdr->outSecOff;
-  hdrBuf[0] = 1;                                  // version
-  hdrBuf[1] = DW_EH_PE_pcrel | DW_EH_PE_sdata4;   // eh_frame_ptr_enc
-  hdrBuf[2] = DW_EH_PE_udata4;                    // fde_count_enc
-  hdrBuf[3] = DW_EH_PE_datarel | DW_EH_PE_sdata4; // table_enc
-  write32(ctx, hdrBuf + 4,
-          getParent()->addr - hdr->getVA() - 4); // eh_frame_ptr
-  write32(ctx, hdrBuf + 8, fdes.size());         // fde_count
-  hdrBuf += 12;
+  hdrBuf[0] = 1; // version
+  if (useSdata8) {
+    hdrBuf[1] = DW_EH_PE_pcrel | DW_EH_PE_sdata8;   // eh_frame_ptr_enc
+    hdrBuf[2] = DW_EH_PE_udata4;                    // fde_count_enc (always 4 bytes)
+    hdrBuf[3] = DW_EH_PE_datarel | DW_EH_PE_sdata8; // table_enc
+    write64(ctx, hdrBuf + 4, getParent()->addr - hdr->getVA() - 4); // eh_frame_ptr
+    write32(ctx, hdrBuf + 12, fdes.size());                         // fde_count
+    hdrBuf += 20; // 1 + 1 + 1 + 1 + 8 + 4 + 4(padding) = 20
 
-  // Write binary search table. Each entry describes the starting PC and the FDE
-  // address.
-  for (FdeData &fde : fdes) {
-    write32(ctx, hdrBuf, fde.pcRel);
-    write32(ctx, hdrBuf + 4, fde.fdeVARel);
-    hdrBuf += 8;
+    // Write binary search table with 64-bit entries
+    for (FdeData &fde : fdes) {
+      write64(ctx, hdrBuf, fde.pcRel);
+      write64(ctx, hdrBuf + 8, fde.fdeVARel);
+      hdrBuf += 16;
+    }
+  } else {
+    hdrBuf[1] = DW_EH_PE_pcrel | DW_EH_PE_sdata4;   // eh_frame_ptr_enc
+    hdrBuf[2] = DW_EH_PE_udata4;                    // fde_count_enc
+    hdrBuf[3] = DW_EH_PE_datarel | DW_EH_PE_sdata4; // table_enc
+    write32(ctx, hdrBuf + 4,
+            getParent()->addr - hdr->getVA() - 4); // eh_frame_ptr
+    write32(ctx, hdrBuf + 8, fdes.size());         // fde_count
+    hdrBuf += 12;
+
+    // Write binary search table with 32-bit entries
+    for (FdeData &fde : fdes) {
+      write32(ctx, hdrBuf, fde.pcRel);
+      write32(ctx, hdrBuf + 4, fde.fdeVARel);
+      hdrBuf += 8;
+    }
   }
 }
 
 EhFrameHeader::EhFrameHeader(Ctx &ctx)
-    : SyntheticSection(ctx, ".eh_frame_hdr", SHT_PROGBITS, SHF_ALLOC, 4) {}
+    : SyntheticSection(ctx, ".eh_frame_hdr", SHT_PROGBITS, SHF_ALLOC,
+                       ctx.arg.ehFrameHdrFormat == EhFrameHdrFormat::SData8
+                           ? 8
+                           : 4) {}
 
 void EhFrameHeader::writeTo(uint8_t *buf) {
   // The section content is written during EhFrameSection::writeTo.
 }
 
 size_t EhFrameHeader::getSize() const {
-  // .eh_frame_hdr has a 12 bytes header followed by an array of FDEs.
-  return 12 + getPartition(ctx).ehFrame->numFdes * 8;
+  // .eh_frame_hdr header size depends on the format:
+  // - sdata4: 12 bytes header + numFdes * 8 bytes per entry
+  // - sdata8: 20 bytes header + numFdes * 16 bytes per entry
+  size_t numFdes = getPartition(ctx).ehFrame->numFdes;
+  if (ctx.arg.ehFrameHdrFormat == EhFrameHdrFormat::SData8)
+    return 20 + numFdes * 16;
+  return 12 + numFdes * 8;
 }
 
 bool EhFrameHeader::isNeeded() const {

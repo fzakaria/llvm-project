@@ -133,6 +133,9 @@ enum class GnuStackKind { None, Exec, NoExec };
 // For --lto=
 enum LtoKind : uint8_t {UnifiedThin, UnifiedRegular, Default};
 
+// For --eh-frame-hdr-format=
+enum class EhFrameHdrFormat { SData4, SData8 };
+
 // For -z gcs=
 enum class GcsPolicy { Implicit, Never, Always };
 
@@ -322,6 +325,7 @@ struct Config {
   bool dependentLibraries;
   bool disableVerify;
   bool ehFrameHdr;
+  EhFrameHdrFormat ehFrameHdrFormat = EhFrameHdrFormat::SData4;
   bool emitLLVM;
   bool emitRelocs;
   bool enableNewDtags;

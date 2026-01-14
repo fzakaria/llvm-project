@@ -13,6 +13,7 @@
 # RUN: not ld.lld %t/main.o -T %t/script.lds --eh-frame-hdr -o /dev/null 2>&1 | FileCheck %s
 
 # CHECK: error: {{.*}}: PC offset is too large
+# CHECK-SAME: consider using --eh-frame-hdr-format=sdata8
 
 #--- main.s
 .text
