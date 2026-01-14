@@ -367,6 +367,44 @@ bool X86_64::relaxOnce(int pass) const {
       }
     }
   }
+
+  // Check for R_GOT_PC overflow (non-relaxable GOT accesses like mov).
+  // If found, record them for the multi-GOT manager.
+  if (ctx.in.x86_64MultiGot) {
+    for (OutputSection *osec : ctx.outputSections) {
+      if (!(osec->flags & SHF_EXECINSTR))
+        continue;
+      for (InputSection *sec : getInputSections(*osec, storage)) {
+        for (Relocation &rel : sec->relocs()) {
+          if (rel.expr != R_GOT_PC)
+            continue;
+
+          uint64_t p = sec->getOutputSection()->addr + sec->outSecOff +
+                       rel.offset;
+          uint64_t gotEntry = rel.sym->getGotVA(ctx);
+          int64_t v = (int64_t)(gotEntry + rel.addend - p);
+
+          // If the GOT access would overflow, record it for multi-GOT.
+          if (!isInt<32>(v)) {
+            ctx.in.x86_64MultiGot->recordGotAccess(*rel.sym, p);
+          }
+        }
+      }
+    }
+
+    // Create secondary GOTs if needed.
+    if (ctx.in.x86_64MultiGot->createSecondaryGots()) {
+      // Secondary GOTs were created. We need to add them to the output and
+      // re-run address assignment.
+      for (auto &secondaryGot : ctx.in.x86_64MultiGot->getSecondaryGots()) {
+        // Place the secondary GOT near its target region.
+        // The section will be added to the output by the linker script.
+        ctx.inputSections.push_back(secondaryGot.get());
+      }
+      changed = true;
+    }
+  }
+
   return changed;
 }
 

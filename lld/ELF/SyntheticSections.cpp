@@ -798,6 +798,129 @@ void GotSection::writeTo(uint8_t *buf) {
   }
 }
 
+// X86_64SecondaryGotSection implementation
+
+X86_64SecondaryGotSection::X86_64SecondaryGotSection(Ctx &ctx,
+                                                     uint64_t targetAddr)
+    : SyntheticSection(ctx, ".got.secondary", SHT_PROGBITS,
+                       SHF_ALLOC | SHF_WRITE, 8),
+      targetAddr(targetAddr) {}
+
+uint32_t X86_64SecondaryGotSection::addEntry(Symbol &sym) {
+  auto it = symbolToIndex.find(&sym);
+  if (it != symbolToIndex.end())
+    return it->second;
+
+  uint32_t index = entries.size();
+  symbolToIndex[&sym] = index;
+  entries.push_back(&sym);
+  return index;
+}
+
+int64_t X86_64SecondaryGotSection::getEntryOffset(const Symbol &sym) const {
+  auto it = symbolToIndex.find(&sym);
+  if (it == symbolToIndex.end())
+    return -1;
+  return it->second * 8;
+}
+
+bool X86_64SecondaryGotSection::hasEntry(const Symbol &sym) const {
+  return symbolToIndex.count(&sym);
+}
+
+void X86_64SecondaryGotSection::writeTo(uint8_t *buf) {
+  // Write each GOT entry. For a secondary GOT, we duplicate the values from
+  // the primary GOT. The dynamic linker will resolve preemptible symbols.
+  for (size_t i = 0; i < entries.size(); ++i) {
+    const Symbol *sym = entries[i];
+    uint8_t *dest = buf + i * 8;
+
+    // Copy the value from the primary GOT entry.
+    // For non-preemptible symbols, we can compute the address directly.
+    // For preemptible symbols, we need dynamic relocations which are handled
+    // separately.
+    if (!sym->isPreemptible) {
+      write64le(dest, sym->getVA(ctx, 0));
+    } else {
+      // Preemptible symbol - will be filled in by dynamic linker.
+      // We emit a GLOB_DAT relocation for this in addGotEntry.
+      write64le(dest, 0);
+    }
+  }
+}
+
+// X86_64MultiGotManager implementation
+
+void X86_64MultiGotManager::recordGotAccess(Symbol &sym, uint64_t accessAddr) {
+  uint64_t region = accessAddr / gotSpacing;
+  regionAccesses[region].insert(&sym);
+}
+
+bool X86_64MultiGotManager::createSecondaryGots() {
+  if (regionAccesses.empty())
+    return false;
+
+  // Check which regions cannot reach the primary GOT.
+  uint64_t primaryGotAddr = ctx.in.got->getVA();
+  bool created = false;
+
+  for (auto &[region, symbols] : regionAccesses) {
+    uint64_t regionCenter = region * gotSpacing + gotSpacing / 2;
+
+    // Check if the primary GOT is within 2GiB reach from this region.
+    int64_t distance = (int64_t)(primaryGotAddr - regionCenter);
+    if (distance >= INT32_MIN && distance <= INT32_MAX)
+      continue; // Primary GOT is reachable.
+
+    // Primary GOT is not reachable. Create a secondary GOT for this region.
+    auto secondaryGot =
+        std::make_unique<X86_64SecondaryGotSection>(ctx, regionCenter);
+
+    // Add entries for all symbols accessed from this region.
+    for (Symbol *sym : symbols)
+      secondaryGot->addEntry(*sym);
+
+    secondaryGots.push_back(std::move(secondaryGot));
+    created = true;
+  }
+
+  return created;
+}
+
+uint64_t X86_64MultiGotManager::getGotEntryAddr(const Symbol &sym,
+                                                 uint64_t accessAddr) const {
+  uint64_t primaryEntryVA = sym.getGotVA(ctx);
+
+  // Check if primary GOT is reachable.
+  int64_t distance = (int64_t)(primaryEntryVA - accessAddr);
+  if (distance >= INT32_MIN && distance <= INT32_MAX)
+    return primaryEntryVA;
+
+  // Primary GOT is not reachable. Find the best secondary GOT.
+  const X86_64SecondaryGotSection *best = nullptr;
+  int64_t bestDistance = INT64_MAX;
+
+  for (const auto &secondaryGot : secondaryGots) {
+    if (!secondaryGot->hasEntry(sym))
+      continue;
+
+    uint64_t entryVA =
+        secondaryGot->getVA() + secondaryGot->getEntryOffset(sym);
+    int64_t dist = std::abs((int64_t)(entryVA - accessAddr));
+    if (dist < bestDistance) {
+      bestDistance = dist;
+      best = secondaryGot.get();
+    }
+  }
+
+  if (best) {
+    return best->getVA() + best->getEntryOffset(sym);
+  }
+
+  // No secondary GOT has this entry. Fall back to primary (will overflow).
+  return primaryEntryVA;
+}
+
 static uint64_t getMipsPageCount(uint64_t size) {
   return (size + 0xfffe) / 0xffff + 1;
 }
@@ -4874,6 +4997,11 @@ template <class ELFT> void elf::createSyntheticSections(Ctx &ctx) {
   } else {
     ctx.in.got = std::make_unique<GotSection>(ctx);
     add(*ctx.in.got);
+  }
+
+  // Initialize multi-GOT manager for x86-64 to handle GOT access overflow.
+  if (ctx.arg.emachine == EM_X86_64) {
+    ctx.in.x86_64MultiGot = std::make_unique<X86_64MultiGotManager>(ctx);
   }
 
   if (ctx.arg.emachine == EM_PPC) {

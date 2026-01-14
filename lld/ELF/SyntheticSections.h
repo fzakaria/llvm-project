@@ -142,6 +142,76 @@ protected:
   SmallVector<AuthEntryInfo, 0> authEntries;
 };
 
+// Secondary GOT section for x86-64 multi-GOT support.
+// When the primary GOT is more than 2GiB away from some code regions,
+// we create secondary GOT sections placed near those regions.
+// Each secondary GOT contains copies of the entries needed by nearby code.
+class X86_64SecondaryGotSection final : public SyntheticSection {
+public:
+  X86_64SecondaryGotSection(Ctx &ctx, uint64_t targetAddr);
+  size_t getSize() const override { return entries.size() * 8; }
+  void writeTo(uint8_t *buf) override;
+  bool isNeeded() const override { return !entries.empty(); }
+
+  // Add an entry for a symbol. Returns the index within this secondary GOT.
+  uint32_t addEntry(Symbol &sym);
+
+  // Get the offset of a symbol's entry within this secondary GOT.
+  // Returns -1 if the symbol is not in this GOT.
+  int64_t getEntryOffset(const Symbol &sym) const;
+
+  // Check if a symbol has an entry in this secondary GOT.
+  bool hasEntry(const Symbol &sym) const;
+
+  // The target address this GOT is placed near (middle of the code region).
+  uint64_t targetAddr;
+
+private:
+  // Map from symbol to entry index in this secondary GOT.
+  llvm::DenseMap<const Symbol *, uint32_t> symbolToIndex;
+  // Ordered list of symbols with entries.
+  SmallVector<Symbol *, 0> entries;
+};
+
+// Manager for x86-64 multiple GOT support.
+// Tracks GOT accesses and creates secondary GOTs as needed.
+class X86_64MultiGotManager {
+public:
+  X86_64MultiGotManager(Ctx &ctx) : ctx(ctx) {}
+
+  // Record a GOT access from a relocation.
+  // Called during finalizeAddressDependentContent when we detect overflow.
+  void recordGotAccess(Symbol &sym, uint64_t accessAddr);
+
+  // Create secondary GOTs for code regions that cannot reach the primary GOT.
+  // Returns true if any secondary GOTs were created.
+  bool createSecondaryGots();
+
+  // Get the best GOT entry address for a symbol accessed from a given address.
+  // Returns the primary GOT entry if reachable, otherwise a secondary GOT entry.
+  uint64_t getGotEntryAddr(const Symbol &sym, uint64_t accessAddr) const;
+
+  // Check if multi-GOT is active (any secondary GOTs exist).
+  bool isActive() const { return !secondaryGots.empty(); }
+
+  // Get all secondary GOT sections.
+  ArrayRef<std::unique_ptr<X86_64SecondaryGotSection>> getSecondaryGots() const {
+    return secondaryGots;
+  }
+
+private:
+  Ctx &ctx;
+  // Secondary GOT sections, placed at intervals throughout the address space.
+  SmallVector<std::unique_ptr<X86_64SecondaryGotSection>, 0> secondaryGots;
+
+  // Track which symbols are accessed from which code regions.
+  // Key: code region (address divided by spacing), Value: symbols accessed.
+  llvm::DenseMap<uint64_t, llvm::SmallDenseSet<Symbol *, 4>> regionAccesses;
+
+  // Spacing between secondary GOTs (1.5 GiB to ensure 2GiB coverage).
+  static constexpr uint64_t gotSpacing = 0x60000000; // 1.5 GiB
+};
+
 // .note.GNU-stack section.
 class GnuStackSection : public SyntheticSection {
 public:

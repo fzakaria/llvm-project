@@ -74,6 +74,7 @@ class StringTableSection;
 class SymbolTableBaseSection;
 class SymtabShndxSection;
 class SyntheticSection;
+class X86_64MultiGotManager;
 
 enum ELFKind : uint8_t {
   ELFNoneKind,
@@ -583,6 +584,7 @@ struct InStruct {
   std::unique_ptr<GotSection> got;
   std::unique_ptr<GotPltSection> gotPlt;
   std::unique_ptr<IgotPltSection> igotPlt;
+  std::unique_ptr<X86_64MultiGotManager> x86_64MultiGot;
   std::unique_ptr<RelroPaddingSection> relroPadding;
   std::unique_ptr<SyntheticSection> armCmseSGSection;
   std::unique_ptr<PPC64LongBranchTargetSection> ppc64LongBranchTarget;
