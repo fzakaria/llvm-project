@@ -434,8 +434,11 @@ unsigned X86TargetLowering::getJumpTableEncoding() const {
   // symbol.
   if (isPositionIndependent() && Subtarget.isPICStyleGOT())
     return MachineJumpTableInfo::EK_Custom32;
+  // For medium and large code models in PIC mode, use 64-bit label differences
+  // since jump table entries may be more than 2GiB from the table base.
+  CodeModel::Model CM = getTargetMachine().getCodeModel();
   if (isPositionIndependent() &&
-      getTargetMachine().getCodeModel() == CodeModel::Large &&
+      (CM == CodeModel::Medium || CM == CodeModel::Large) &&
       !Subtarget.isTargetCOFF())
     return MachineJumpTableInfo::EK_LabelDifference64;
 
