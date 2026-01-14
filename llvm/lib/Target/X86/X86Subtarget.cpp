@@ -95,6 +95,10 @@ X86Subtarget::classifyLocalReference(const GlobalValue *GV) const {
       // GV == nullptr is for all other non-GlobalValue global data like the
       // constant pool, jump tables, labels, etc. The small and medium code
       // models treat these as accessible with a RIP-rel access.
+      // However, if LargeDataThreshold is 0, we assume all data could be far
+      // away and use GOTOFF like the large code model.
+      if (CM == CodeModel::Medium && TM.getLargeDataThreshold() == 0)
+        return X86II::MO_GOTOFF;
       return X86II::MO_NO_FLAG;
     }
 
