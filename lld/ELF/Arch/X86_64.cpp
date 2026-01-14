@@ -369,7 +369,8 @@ bool X86_64::relaxOnce(int pass) const {
   }
 
   // Check for R_GOT_PC overflow (non-relaxable GOT accesses like mov).
-  // If found, record them for the multi-GOT manager.
+  // If found, record them for the multi-GOT manager and change expr to
+  // R_SECONDARY_GOT_PC.
   if (ctx.in.x86_64MultiGot) {
     for (OutputSection *osec : ctx.outputSections) {
       if (!(osec->flags & SHF_EXECINSTR))
@@ -384,9 +385,12 @@ bool X86_64::relaxOnce(int pass) const {
           uint64_t gotEntry = rel.sym->getGotVA(ctx);
           int64_t v = (int64_t)(gotEntry + rel.addend - p);
 
-          // If the GOT access would overflow, record it for multi-GOT.
+          // If the GOT access would overflow, record it for multi-GOT
+          // and change the expression to R_SECONDARY_GOT_PC.
           if (!isInt<32>(v)) {
             ctx.in.x86_64MultiGot->recordGotAccess(*rel.sym, p);
+            rel.expr = R_SECONDARY_GOT_PC;
+            changed = true;
           }
         }
       }
@@ -402,6 +406,11 @@ bool X86_64::relaxOnce(int pass) const {
         ctx.inputSections.push_back(secondaryGot.get());
       }
       changed = true;
+    }
+
+    // Finalize placement for binary search during resolution.
+    if (ctx.in.x86_64MultiGot->isActive()) {
+      ctx.in.x86_64MultiGot->finalizePlacement();
     }
   }
 
@@ -951,7 +960,7 @@ void X86_64::relocate(uint8_t *loc, const Relocation &rel, uint64_t val) const {
   case R_X86_64_GOTPCRELX:
   case R_X86_64_REX_GOTPCRELX:
   case R_X86_64_CODE_4_GOTPCRELX:
-    if (rel.expr != R_GOT_PC) {
+    if (rel.expr != R_GOT_PC && rel.expr != R_SECONDARY_GOT_PC) {
       relaxGot(loc, rel, val);
     } else {
       checkInt(ctx, loc, val, 32, rel);

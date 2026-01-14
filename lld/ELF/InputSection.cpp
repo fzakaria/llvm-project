@@ -826,14 +826,12 @@ uint64_t InputSectionBase::getRelocTargetVA(Ctx &ctx, const Relocation &r,
     return r.sym->getGotVA(ctx) + a - getAArch64Page(ctx.in.got->getVA());
   case R_GOT_PC:
   case RE_AARCH64_AUTH_GOT_PC:
-  case R_RELAX_TLS_GD_TO_IE: {
-    // For x86-64, use multi-GOT if available to handle overflow cases.
-    if (ctx.arg.emachine == EM_X86_64 && ctx.in.x86_64MultiGot &&
-        ctx.in.x86_64MultiGot->isActive()) {
-      return ctx.in.x86_64MultiGot->getGotEntryAddr(*r.sym, p) + a - p;
-    }
+  case R_RELAX_TLS_GD_TO_IE:
     return r.sym->getGotVA(ctx) + a - p;
-  }
+  case R_SECONDARY_GOT_PC:
+    // Access through secondary GOT (x86-64 multi-GOT).
+    // Find the nearest secondary GOT entry for this symbol.
+    return ctx.in.x86_64MultiGot->getSecondaryGotEntryAddr(*r.sym, p) + a - p;
   case R_GOTPLT_GOTREL:
     return r.sym->getGotPltVA(ctx) + a - ctx.in.got->getVA();
   case R_GOTPLT_PC:

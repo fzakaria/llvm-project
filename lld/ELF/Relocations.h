@@ -47,6 +47,7 @@ enum RelExpr {
   R_GOT,
   R_GOT_OFF,
   R_GOT_PC,
+  R_SECONDARY_GOT_PC, // Access through secondary GOT (x86-64 multi-GOT)
   R_GOTONLY_PC,
   R_GOTPLTONLY_PC,
   R_GOTPLT,

@@ -175,6 +175,8 @@ private:
 
 // Manager for x86-64 multiple GOT support.
 // Tracks GOT accesses and creates secondary GOTs as needed.
+// Uses a registry-based approach where secondary GOTs are sorted by address
+// for efficient nearest-GOT lookup during relocation resolution.
 class X86_64MultiGotManager {
 public:
   X86_64MultiGotManager(Ctx &ctx) : ctx(ctx) {}
@@ -187,9 +189,17 @@ public:
   // Returns true if any secondary GOTs were created.
   bool createSecondaryGots();
 
-  // Get the best GOT entry address for a symbol accessed from a given address.
-  // Returns the primary GOT entry if reachable, otherwise a secondary GOT entry.
-  uint64_t getGotEntryAddr(const Symbol &sym, uint64_t accessAddr) const;
+  // Finalize placement: sort secondary GOTs by VA for binary search.
+  // Call this after address assignment is complete.
+  void finalizePlacement();
+
+  // Find the nearest secondary GOT that can be reached from the given address.
+  // Returns nullptr if no reachable secondary GOT exists.
+  X86_64SecondaryGotSection *findNearestGot(uint64_t accessAddr) const;
+
+  // Get the GOT entry address for a symbol from the nearest secondary GOT.
+  // Used for R_SECONDARY_GOT_PC resolution.
+  uint64_t getSecondaryGotEntryAddr(const Symbol &sym, uint64_t accessAddr) const;
 
   // Check if multi-GOT is active (any secondary GOTs exist).
   bool isActive() const { return !secondaryGots.empty(); }
@@ -203,6 +213,9 @@ private:
   Ctx &ctx;
   // Secondary GOT sections, placed at intervals throughout the address space.
   SmallVector<std::unique_ptr<X86_64SecondaryGotSection>, 0> secondaryGots;
+
+  // Sorted list of secondary GOT VAs for binary search (populated by finalizePlacement).
+  SmallVector<std::pair<uint64_t, X86_64SecondaryGotSection *>, 0> sortedGots;
 
   // Track which symbols are accessed from which code regions.
   // Key: code region (address divided by spacing), Value: symbols accessed.

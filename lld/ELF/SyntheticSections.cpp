@@ -887,38 +887,69 @@ bool X86_64MultiGotManager::createSecondaryGots() {
   return created;
 }
 
-uint64_t X86_64MultiGotManager::getGotEntryAddr(const Symbol &sym,
-                                                 uint64_t accessAddr) const {
-  uint64_t primaryEntryVA = sym.getGotVA(ctx);
+void X86_64MultiGotManager::finalizePlacement() {
+  // Build sorted list of secondary GOTs by VA for binary search.
+  sortedGots.clear();
+  for (auto &got : secondaryGots) {
+    sortedGots.push_back({got->getVA(), got.get()});
+  }
+  llvm::sort(sortedGots,
+             [](const auto &a, const auto &b) { return a.first < b.first; });
+}
 
-  // Check if primary GOT is reachable.
-  int64_t distance = (int64_t)(primaryEntryVA - accessAddr);
-  if (distance >= INT32_MIN && distance <= INT32_MAX)
-    return primaryEntryVA;
+X86_64SecondaryGotSection *
+X86_64MultiGotManager::findNearestGot(uint64_t accessAddr) const {
+  if (sortedGots.empty())
+    return nullptr;
 
-  // Primary GOT is not reachable. Find the best secondary GOT.
-  const X86_64SecondaryGotSection *best = nullptr;
-  int64_t bestDistance = INT64_MAX;
+  // Binary search for the nearest secondary GOT.
+  auto it = llvm::lower_bound(
+      sortedGots, accessAddr,
+      [](const std::pair<uint64_t, X86_64SecondaryGotSection *> &p,
+         uint64_t addr) { return p.first < addr; });
 
-  for (const auto &secondaryGot : secondaryGots) {
-    if (!secondaryGot->hasEntry(sym))
-      continue;
+  X86_64SecondaryGotSection *best = nullptr;
+  int64_t bestDist = INT64_MAX;
 
-    uint64_t entryVA =
-        secondaryGot->getVA() + secondaryGot->getEntryOffset(sym);
-    int64_t dist = std::abs((int64_t)(entryVA - accessAddr));
-    if (dist < bestDistance) {
-      bestDistance = dist;
-      best = secondaryGot.get();
+  // Check the candidate at or after accessAddr.
+  if (it != sortedGots.end()) {
+    int64_t dist = std::abs((int64_t)(it->first - accessAddr));
+    if (dist < bestDist && dist <= INT32_MAX) {
+      bestDist = dist;
+      best = it->second;
     }
   }
 
-  if (best) {
-    return best->getVA() + best->getEntryOffset(sym);
+  // Check the candidate before accessAddr.
+  if (it != sortedGots.begin()) {
+    --it;
+    int64_t dist = std::abs((int64_t)(it->first - accessAddr));
+    if (dist < bestDist && dist <= INT32_MAX) {
+      bestDist = dist;
+      best = it->second;
+    }
   }
 
-  // No secondary GOT has this entry. Fall back to primary (will overflow).
-  return primaryEntryVA;
+  return best;
+}
+
+uint64_t
+X86_64MultiGotManager::getSecondaryGotEntryAddr(const Symbol &sym,
+                                                 uint64_t accessAddr) const {
+  X86_64SecondaryGotSection *got = findNearestGot(accessAddr);
+  if (got && got->hasEntry(sym)) {
+    return got->getVA() + got->getEntryOffset(sym);
+  }
+
+  // Fallback: search all secondary GOTs for this symbol.
+  for (const auto &secondaryGot : secondaryGots) {
+    if (secondaryGot->hasEntry(sym)) {
+      return secondaryGot->getVA() + secondaryGot->getEntryOffset(sym);
+    }
+  }
+
+  // No secondary GOT has this entry. Return primary GOT (will overflow).
+  return sym.getGotVA(ctx);
 }
 
 static uint64_t getMipsPageCount(uint64_t size) {
