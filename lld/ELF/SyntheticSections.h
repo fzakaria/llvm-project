@@ -45,6 +45,18 @@ class SymbolTableBaseSection;
 struct CieRecord {
   EhSectionPiece *cie = nullptr;
   SmallVector<EhSectionPiece *, 0> fdes;
+
+  // Set to true if any FDE in this CIE needs 64-bit encoding due to
+  // reverse relaxation (distance to function exceeds 32 bits).
+  bool needs64BitEncoding = false;
+
+  // Set to true if CIE personality pointer needs 64-bit encoding due to
+  // reverse relaxation (distance to personality routine exceeds 32 bits).
+  bool needsPersonality64Bit = false;
+
+  // Set to true if FDE LSDA pointers need 64-bit encoding due to
+  // reverse relaxation (distance to LSDA exceeds 32 bits).
+  bool needsLsda64Bit = false;
 };
 
 // Section for .eh_frame.
@@ -72,7 +84,29 @@ public:
   template <class ELFT>
   void iterateFDEWithLSDA(llvm::function_ref<void(InputSection &)> fn);
 
+  // Check if any FDEs would overflow 32-bit relocations and need expansion.
+  // If so, expand them and recalculate the section size.
+  // Returns true if the section size changed (requiring another layout pass).
+  bool updateAllocSize(Ctx &) override;
+
+  // Returns true if reverse relaxation is needed (any CIE needs 64-bit).
+  bool needsReverseRelaxation() const { return needsReverseRelax; }
+
+  // Check if a specific FDE (identified by input offset) belongs to a CIE
+  // that needs 64-bit encoding. Used to skip applying the initial_location,
+  // personality pointer, or LSDA relocation since we handle it directly in
+  // writeTo.
+  bool shouldSkipRelocation(EhInputSection *sec, uint64_t inputOff) const;
+
 private:
+  // Detect FDEs that would overflow 32-bit relocations and mark their
+  // CIE records for 64-bit encoding. Returns true if any CIE needs expansion.
+  bool detectOverflowingFDEs();
+
+  // Recalculate section size after reverse relaxation.
+  // Must be called after detectOverflowingFDEs() if it returns true.
+  void recalculateSizeForReverseRelaxation();
+
   // This is used only when parsing EhInputSection. We keep it here to avoid
   // allocating one for each EhInputSection.
   llvm::DenseMap<size_t, CieRecord *> offsetToCie;
@@ -90,6 +124,9 @@ private:
 
   // CIE records are uniquified by their contents and personality functions.
   llvm::DenseMap<std::pair<ArrayRef<uint8_t>, Symbol *>, CieRecord *> cieMap;
+
+  // True if any CIE needs 64-bit encoding due to FDE overflow.
+  bool needsReverseRelax = false;
 };
 
 // .eh_frame_hdr contains a binary search table for .eh_frame FDEs. The section

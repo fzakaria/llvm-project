@@ -13,11 +13,49 @@
 #include "InputSection.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
+#include "llvm/BinaryFormat/Dwarf.h"
 #include "llvm/DebugInfo/DWARF/DWARFContext.h"
 #include "llvm/Object/ELF.h"
 #include <optional>
 
 namespace lld::elf {
+
+//===----------------------------------------------------------------------===//
+// DWARF Pointer Encoding Utilities
+//
+// DWARF pointer encodings (DW_EH_PE_*) are used in .eh_frame and
+// .gcc_except_table to specify how pointers are encoded. The encoding byte
+// consists of two parts:
+//   - Low nibble (& 0x0F): Size/format (absptr, udata2, sdata4, etc.)
+//   - High nibble (& 0xF0): Application (pcrel, textrel, datarel, etc.)
+//
+// These utilities extract the size component for use in reverse relaxation
+// when expanding 4-byte (sdata4) encodings to 8-byte (sdata8) encodings.
+//===----------------------------------------------------------------------===//
+
+// Get the size in bytes for a DWARF pointer encoding.
+// Extracts the size from the low nibble of the encoding byte.
+// Returns 0 for unknown/omit encodings.
+inline size_t getSizeForEncoding(uint8_t enc, bool is64Bit) {
+  if (enc == llvm::dwarf::DW_EH_PE_omit)
+    return 0;
+  switch (enc & 0x0F) {
+  case llvm::dwarf::DW_EH_PE_absptr:
+  case llvm::dwarf::DW_EH_PE_signed:
+    return is64Bit ? 8 : 4;
+  case llvm::dwarf::DW_EH_PE_udata2:
+  case llvm::dwarf::DW_EH_PE_sdata2:
+    return 2;
+  case llvm::dwarf::DW_EH_PE_udata4:
+  case llvm::dwarf::DW_EH_PE_sdata4:
+    return 4;
+  case llvm::dwarf::DW_EH_PE_udata8:
+  case llvm::dwarf::DW_EH_PE_sdata8:
+    return 8;
+  default:
+    return 0;
+  }
+}
 
 class InputSection;
 

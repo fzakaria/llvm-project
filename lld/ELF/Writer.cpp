@@ -12,6 +12,8 @@
 #include "BPSectionOrderer.h"
 #include "CallGraphSort.h"
 #include "Config.h"
+#include "EhFrame.h"
+#include "GccExceptTable.h"
 #include "InputFiles.h"
 #include "LinkerScript.h"
 #include "MapFile.h"
@@ -1609,6 +1611,28 @@ template <class ELFT> void Writer<ELFT>::finalizeAddressDependentContent() {
 
     std::pair<const OutputSection *, const Defined *> changes =
         ctx.script->assignAddresses();
+
+    // Check for .eh_frame FDE overflow after addresses are assigned.
+    // This must happen after assignAddresses so we have correct section
+    // addresses to compute PC-relative distances for overflow detection.
+    for (Partition &part : ctx.partitions) {
+      if (part.ehFrame && part.ehFrame->isNeeded())
+        changed |= part.ehFrame->updateAllocSize(ctx);
+    }
+
+    // Check for .gcc_except_table type table overflow after addresses are
+    // assigned. If any type table entry would overflow 32 bits, expand the
+    // LSDA to use 64-bit type encodings.
+    for (InputSectionBase *isec : ctx.inputSections) {
+      if (auto *sec = dyn_cast<InputSection>(isec)) {
+        if (sec->isLive() && sec->name.starts_with(".gcc_except_table")) {
+          if (reverseRelaxGccExceptTable(ctx, sec)) {
+            changed = true;
+          }
+        }
+      }
+    }
+
     if (!changed) {
       // Some symbols may be dependent on section addresses. When we break the
       // loop, the symbol values are finalized because a previous

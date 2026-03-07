@@ -17,6 +17,7 @@
 #include "Config.h"
 #include "DWARF.h"
 #include "EhFrame.h"
+#include "EhFrameReverseRelax.h"
 #include "InputFiles.h"
 #include "LinkerScript.h"
 #include "OutputSections.h"
@@ -170,7 +171,7 @@ void GnuPropertySection::writeTo(uint8_t *buf) {
   write32(ctx, buf, 4);                          // Name size
   write32(ctx, buf + 4, getSize() - 16);         // Content size
   write32(ctx, buf + 8, NT_GNU_PROPERTY_TYPE_0); // Type
-  memcpy(buf + 12, "GNU", 4);               // Name string
+  memcpy(buf + 12, "GNU", 4);                    // Name string
 
   unsigned offset = 16;
   if (ctx.arg.andFeatures != 0) {
@@ -208,7 +209,7 @@ void BuildIdSection::writeTo(uint8_t *buf) {
   write32(ctx, buf, 4);                   // Name size
   write32(ctx, buf + 4, hashSize);        // Content size
   write32(ctx, buf + 8, NT_GNU_BUILD_ID); // Type
-  memcpy(buf + 12, "GNU", 4);           // Name string
+  memcpy(buf + 12, "GNU", 4);             // Name string
   hashBuf = buf + 16;
 }
 
@@ -324,12 +325,6 @@ void EhFrameSection::iterateFDEWithLSDA(
   }
 }
 
-static void writeCieFde(Ctx &ctx, uint8_t *buf, ArrayRef<uint8_t> d) {
-  memcpy(buf, d.data(), d.size());
-  // Fix the size field. -4 since size does not include the size field itself.
-  write32(ctx, buf, d.size() - 4);
-}
-
 void EhFrameSection::finalizeContents() {
   assert(!this->size); // Not finalized.
 
@@ -370,26 +365,205 @@ void EhFrameSection::finalizeContents() {
   this->size = off;
 }
 
+// Detect FDEs that would overflow 32-bit relocations due to large PC-relative
+// distances. For each CIE whose FDEs would overflow, mark it for 64-bit
+// encoding. This implements "reverse relaxation" - expanding relocations
+// when they would overflow rather than erroring.
+//
+// CONVERGENCE GUARANTEE:
+// This function ensures loop convergence in Writer.cpp by using a "once set,
+// stays set" pattern for the needs*64Bit flags. Once a CieRecord has any of:
+//   - needs64BitEncoding (FDE initial_location expansion)
+//   - needsPersonality64Bit (CIE personality pointer expansion)
+//   - needsLsda64Bit (FDE LSDA pointer expansion)
+// set to true, it will never be reset. The checks at the start of each
+// overflow detection function (e.g., `!rec->needs64BitEncoding && ...`)
+// ensure that we only check CIEs that haven't already been marked for
+// expansion. This guarantees each CIE is expanded at most once, and the
+// address assignment loop will converge.
+//
+// Returns true if any CIE needs 64-bit encoding (and thus the section
+// size may change).
+bool EhFrameSection::detectOverflowingFDEs() {
+  if (cieRecords.empty())
+    return false;
+
+  uint64_t ehFrameAddr = getParent() ? getParent()->addr : 0;
+  bool anyOverflow = false;
+  bool is64Bit = ctx.arg.is64;
+
+  for (CieRecord *rec : cieRecords) {
+    if (!rec->needs64BitEncoding &&
+        checkFdeInitialLocationOverflow(ctx, rec, ehFrameAddr)) {
+      rec->needs64BitEncoding = true;
+      anyOverflow = true;
+    }
+
+    if (!rec->needsPersonality64Bit &&
+        checkPersonalityPointerOverflow(ctx, rec, ehFrameAddr, is64Bit)) {
+      rec->needsPersonality64Bit = true;
+      anyOverflow = true;
+    }
+
+    if (!rec->needsLsda64Bit &&
+        checkLsdaPointerOverflow(ctx, rec, ehFrameAddr)) {
+      rec->needsLsda64Bit = true;
+      anyOverflow = true;
+    }
+  }
+
+  needsReverseRelax = needsReverseRelax || anyOverflow;
+  return anyOverflow;
+}
+
+// Check if a specific relocation (identified by output offset) targets the
+// initial_location field of an FDE that needs 64-bit encoding, OR targets
+// a personality pointer in a CIE that needs expansion, OR targets an LSDA
+// pointer in an FDE that needs expansion.
+bool EhFrameSection::shouldSkipRelocation(EhInputSection *sec,
+                                          uint64_t relOutputOff) const {
+  if (!needsReverseRelax)
+    return false;
+
+  for (CieRecord *rec : cieRecords) {
+    size_t cieOutputOff = rec->cie->outputOff;
+    size_t cieOrigSize = rec->cie->size;
+
+    // Check if relocation is in this CIE
+    if (relOutputOff >= cieOutputOff &&
+        relOutputOff < cieOutputOff + cieOrigSize) {
+      size_t relOffInCie = relOutputOff - cieOutputOff;
+      return shouldSkipCieRelocation(ctx, rec, relOffInCie);
+    }
+
+    // Skip FDE check if no expansion needed
+    if (!rec->needs64BitEncoding && !rec->needsLsda64Bit)
+      continue;
+
+    // Check if relocation is in one of the FDEs
+    for (EhSectionPiece *fde : rec->fdes) {
+      size_t fdeOutputOff = fde->outputOff;
+      size_t fdeSize = fde->size;
+      if (relOutputOff >= fdeOutputOff &&
+          relOutputOff < fdeOutputOff + fdeSize) {
+        size_t relOffsetInFde = relOutputOff - fdeOutputOff;
+        return shouldSkipFdeRelocation(ctx, rec, relOffsetInFde);
+      }
+    }
+  }
+  return false;
+}
+
+// encoding. When reverse relaxation is needed:
+// - FDE initial_location grows from 4 to 8 bytes (+4)
+// - FDE address_range grows from 4 to 8 bytes (+4)
+// - CIE personality pointer grows from 4 to 8 bytes (+4 for CIE)
+// - FDE LSDA pointer grows from 4 to 8 bytes (+4 per FDE)
+void EhFrameSection::recalculateSizeForReverseRelaxation() {
+  size_t off = 0;
+  for (CieRecord *rec : cieRecords) {
+    rec->cie->outputOff = off;
+
+    // Calculate extra bytes for CIE if personality needs expansion
+    size_t cieExtra = rec->needsPersonality64Bit ? 4 : 0;
+    off += rec->cie->size + cieExtra;
+
+    // Calculate extra bytes per FDE
+    size_t extraPerFde = 0;
+    if (rec->needs64BitEncoding)
+      extraPerFde += 8; // +4 for initial_location, +4 for address_range
+    if (rec->needsLsda64Bit)
+      extraPerFde += 4; // +4 for LSDA pointer
+
+    for (EhSectionPiece *fde : rec->fdes) {
+      fde->outputOff = off;
+      off += fde->size + extraPerFde;
+    }
+  }
+
+  // Terminator
+  off += 4;
+
+  this->size = off;
+}
+
+// Implement updateAllocSize to detect FDE overflow and expand if needed.
+// Called during assignAddresses to handle cases where the section grew
+// larger than expected. Returns true if size changed.
+bool EhFrameSection::updateAllocSize(Ctx &) {
+  size_t oldSize = size;
+
+  // Check if any FDEs would overflow and need 64-bit encoding
+  if (detectOverflowingFDEs()) {
+    // Recalculate sizes with expanded FDEs
+    recalculateSizeForReverseRelaxation();
+  }
+
+  return size != oldSize;
+}
+
 void EhFrameSection::writeTo(uint8_t *buf) {
+  uint64_t ehFrameAddr = getParent() ? getParent()->addr : 0;
+
   // Write CIE and FDE records.
   for (CieRecord *rec : cieRecords) {
     size_t cieOffset = rec->cie->outputOff;
-    writeCieFde(ctx, buf + cieOffset, rec->cie->data());
+
+    // Determine what expansions are needed for this CIE
+    bool expandPersonality = rec->needsPersonality64Bit;
+    bool expandFdeEnc = rec->needs64BitEncoding;
+    bool expandLsda = rec->needsLsda64Bit;
+
+    // Write CIE with appropriate expansions
+    writeCie(ctx, buf + cieOffset, rec->cie, ehFrameAddr, expandFdeEnc,
+             expandPersonality);
+
+    // Get augmentation info for FDEs if LSDA expansion needed
+    CieAugmentationInfo lsdaInfo;
+    if (expandLsda) {
+      lsdaInfo = parseCieAugmentation(rec->cie, ctx.arg.is64);
+    }
 
     for (EhSectionPiece *fde : rec->fdes) {
       size_t off = fde->outputOff;
-      writeCieFde(ctx, buf + off, fde->data());
 
-      // FDE's second word should have the offset to an associated CIE.
-      // Write it.
-      write32(ctx, buf + off + 4, off + 4 - cieOffset);
+      // Write FDE with appropriate expansions
+      writeFde(ctx, buf + off, fde, cieOffset, off, ehFrameAddr, expandFdeEnc,
+               expandLsda, lsdaInfo);
     }
   }
 
   // Apply relocations to .eh_frame entries. This includes CIE personality
   // pointers, FDE initial_location fields, and LSDA pointers.
-  for (EhInputSection *s : sections)
-    ctx.target->relocateEh(*s, buf);
+  // For CIEs with 64-bit encoding, we skip the initial_location relocation
+  // since we've already written the correct 64-bit value directly.
+  for (EhInputSection *s : sections) {
+    // If no reverse relaxation needed, just apply all relocations normally
+    if (!needsReverseRelax) {
+      ctx.target->relocateEh(*s, buf);
+      continue;
+    }
+
+    // With reverse relaxation, we need to skip initial_location relocations
+    // for FDEs that belong to CIEs with 64-bit encoding.
+    uint64_t secAddr =
+        s->getOutputSection()->addr + getPartition(ctx).ehFrame->outSecOff;
+    const unsigned bits = ctx.arg.is64 ? 64 : 32;
+
+    for (const Relocation &rel : s->relocs()) {
+      // Check if this relocation targets a field that we've already written
+      // directly (initial_location, personality pointer, or LSDA pointer).
+      if (shouldSkipRelocation(s, rel.offset)) {
+        continue;
+      }
+
+      uint8_t *loc = buf + rel.offset;
+      const uint64_t val = SignExtend64(
+          s->getRelocTargetVA(ctx, rel, secAddr + rel.offset), bits);
+      if (rel.expr != R_RELAX_HINT)
+        ctx.target->relocate(loc, rel, val);
+    }
+  }
 
   EhFrameHeader *hdr = getPartition(ctx).ehFrameHdr.get();
   if (!hdr || !hdr->getParent())

@@ -43,6 +43,8 @@ add_lld_library(lldELF
   Driver.cpp
   DriverUtils.cpp
   EhFrame.cpp
+  EhFrameReverseRelax.cpp
+  GccExceptTable.cpp
   ICF.cpp
   InputFiles.cpp
   InputSection.cpp
